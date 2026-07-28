@@ -224,7 +224,7 @@ with head_titel:
 # --------------------------------------------------------------------------
 # Filter (aufklappbar)
 # --------------------------------------------------------------------------
-with st.expander("🔎 Filter", expanded=True):
+with st.expander("🔎 Filter", expanded=False):
     f_jahr, f_zeit, f_einheit = st.columns([1.2, 1.8, 0.8])
     with f_jahr:
         auswahl = st.multiselect("Lieferjahr", options=alle_jahre, default=alle_jahre)
@@ -409,49 +409,47 @@ if not df.empty:
 
 
 # --------------------------------------------------------------------------
-# Vergabepreis-Vergleich (immer in ct/kWh)
+# Vergabepreis-Vergleich (immer in ct/kWh, aufklappbar)
 # --------------------------------------------------------------------------
-st.markdown('<div class="eyebrow">Vergabe</div>', unsafe_allow_html=True)
-st.subheader("Vergabepreis-Vergleich")
+with st.expander("Vergabepreis-Vergleich", expanded=False):
+    V_FAKTOR, V_NK, V_EINHEIT = 0.1, 2, "ct/kWh"   # EUR/MWh -> ct/kWh
 
-V_FAKTOR, V_NK, V_EINHEIT = 0.1, 2, "ct/kWh"   # EUR/MWh -> ct/kWh
+    v1, v2 = st.columns([1, 1])
+    with v1:
+        ref_jahr = st.selectbox("Lieferjahr", options=alle_jahre, index=0)
+    reihe_ref = data[data["Lieferjahr"] == ref_jahr].sort_values("Datum")
+    marktpreis = round(reihe_ref["Preis"].iloc[-1] * V_FAKTOR, V_NK) if not reihe_ref.empty else 0.0
+    with v2:
+        vergabepreis = st.number_input(
+            f"Vergabepreis ({V_EINHEIT})",
+            min_value=0.0, value=marktpreis, step=0.01, format=f"%.{V_NK}f",
+        )
 
-v1, v2 = st.columns([1, 1])
-with v1:
-    ref_jahr = st.selectbox("Lieferjahr", options=alle_jahre, index=0)
-reihe_ref = data[data["Lieferjahr"] == ref_jahr].sort_values("Datum")
-marktpreis = round(reihe_ref["Preis"].iloc[-1] * V_FAKTOR, V_NK) if not reihe_ref.empty else 0.0
-with v2:
-    vergabepreis = st.number_input(
-        f"Vergabepreis ({V_EINHEIT})",
-        min_value=0.0, value=marktpreis, step=0.01, format=f"%.{V_NK}f",
-    )
-
-if vergabepreis > 0 and marktpreis > 0:
-    auf_wert = vergabepreis - marktpreis
-    auf_pct = auf_wert / marktpreis * 100
-    eps = 0.5 * 10 ** (-V_NK)   # halbe Anzeigestelle Toleranz
-    if auf_wert > eps:
-        farbe, label = "#FF6B7A", "Aufschlag über Marktpreis"
-    elif auf_wert < -eps:
-        farbe, label = "#37E6A6", "Abschlag unter Marktpreis"
-    else:
-        farbe, label = "#FFC24B", "auf Marktpreisniveau"
-    st.markdown(
-        f"""
-        <div class="kpi-card">
-          <div class="kpi-eyebrow">{label} · Cal {ref_jahr}</div>
-          <div class="kpi-price" style="color:{farbe}">{auf_wert:+.{V_NK}f}<span class="kpi-unit">{V_EINHEIT}</span></div>
-          <div class="kpi-delta" style="color:{farbe}">{auf_pct:+.1f} % gegenüber Marktpreis</div>
-          <div class="kpi-amp">Marktpreis {marktpreis:.{V_NK}f} · Vergabepreis {vergabepreis:.{V_NK}f} {V_EINHEIT}</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-    st.caption(
-        "Marktpreis = aktueller EEX-Settlementpreis des gewählten Lieferjahres, umgerechnet in ct/kWh. "
-        "Der Aufschlag ist die Differenz deines Vergabepreises dazu (z. B. Marge, Netzentgelte, Vertrieb)."
-    )
+    if vergabepreis > 0 and marktpreis > 0:
+        auf_wert = vergabepreis - marktpreis
+        auf_pct = auf_wert / marktpreis * 100
+        eps = 0.5 * 10 ** (-V_NK)   # halbe Anzeigestelle Toleranz
+        if auf_wert > eps:
+            farbe, label = "#FF6B7A", "Aufschlag über Marktpreis"
+        elif auf_wert < -eps:
+            farbe, label = "#37E6A6", "Abschlag unter Marktpreis"
+        else:
+            farbe, label = "#FFC24B", "auf Marktpreisniveau"
+        st.markdown(
+            f"""
+            <div class="kpi-card">
+              <div class="kpi-eyebrow">{label} · Cal {ref_jahr}</div>
+              <div class="kpi-price" style="color:{farbe}">{auf_wert:+.{V_NK}f}<span class="kpi-unit">{V_EINHEIT}</span></div>
+              <div class="kpi-delta" style="color:{farbe}">{auf_pct:+.1f} % gegenüber Marktpreis</div>
+              <div class="kpi-amp">Marktpreis {marktpreis:.{V_NK}f} · Vergabepreis {vergabepreis:.{V_NK}f} {V_EINHEIT}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        st.caption(
+            "Marktpreis = aktueller EEX-Settlementpreis des gewählten Lieferjahres, umgerechnet in ct/kWh. "
+            "Der Aufschlag ist die Differenz deines Vergabepreises dazu (z. B. Marge, Netzentgelte, Vertrieb)."
+        )
 
 
 # --------------------------------------------------------------------------
