@@ -347,53 +347,52 @@ if not df.empty:
         "x-Achse: Handelstag · y-Achse: Preis · steigende Linie = Beschaffung wird teurer."
     )
 
-    # Min / Durchschnitt / Max je Lieferjahr im gewählten Zeitraum
-    st.markdown('<div class="eyebrow">Statistik im Zeitraum</div>', unsafe_allow_html=True)
-    stats = df.groupby("Lieferjahr")["Wert"].agg(["min", "mean", "max"]).reset_index()
-    zeilen_stat = "".join(
-        f"<tr><td>{r['Lieferjahr']}</td>"
-        f"<td class='num'>{r['min']:.{nk}f}</td>"
-        f"<td class='num'>{r['mean']:.{nk}f}</td>"
-        f"<td class='num'>{r['max']:.{nk}f}</td></tr>"
-        for _, r in stats.iterrows()
-    )
-    st.markdown(
-        f"""
-        <div class="tbl-wrap"><table class="tbl">
-          <thead><tr><th>Lieferjahr</th>
-            <th class="num">Min ({einheit})</th>
-            <th class="num">Ø ({einheit})</th>
-            <th class="num">Max ({einheit})</th></tr></thead>
-          <tbody>{zeilen_stat}</tbody>
-        </table></div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    # Einordnung: aktueller Preis ggue. Durchschnitt (Ampel) + Lage zu Min/Max
-    einordnung = ""
-    for _, r in stats.iterrows():
-        jahr, mn, avg, mx = r["Lieferjahr"], r["min"], r["mean"], r["max"]
-        aktuell = df[df["Lieferjahr"] == jahr].sort_values("Datum")["Wert"].iloc[-1]
-        abw = (aktuell - avg) / avg * 100 if avg else 0.0
-        if abw > 1:
-            dot, txt = "red", "über Ø (teurer als Schnitt)"
-        elif abw < -1:
-            dot, txt = "green", "unter Ø (günstiger als Schnitt)"
-        else:
-            dot, txt = "yellow", "auf Ø-Niveau"
-        # Lage zwischen Min und Max
-        if mx > mn:
-            anteil = (aktuell - mn) / (mx - mn)
-            lage = "nahe Minimum" if anteil < 0.33 else ("nahe Maximum" if anteil > 0.66 else "im Mittelfeld")
-        else:
-            lage = "konstant"
-        einordnung += (
-            f"<div class='kpi-amp'><span class='dot {dot}'></span>"
-            f"<b>Cal {jahr}</b>&nbsp;aktuell {aktuell:.{nk}f} {einheit} · "
-            f"{abw:+.1f} % ggü. Ø · {txt} · {lage}</div>"
+    # Statistik + Einordnung (aufklappbar)
+    with st.expander("Statistik im Zeitraum", expanded=True):
+        stats = df.groupby("Lieferjahr")["Wert"].agg(["min", "mean", "max"]).reset_index()
+        zeilen_stat = "".join(
+            f"<tr><td>{r['Lieferjahr']}</td>"
+            f"<td class='num'>{r['min']:.{nk}f}</td>"
+            f"<td class='num'>{r['mean']:.{nk}f}</td>"
+            f"<td class='num'>{r['max']:.{nk}f}</td></tr>"
+            for _, r in stats.iterrows()
         )
-    st.markdown(einordnung, unsafe_allow_html=True)
+        st.markdown(
+            f"""
+            <div class="tbl-wrap"><table class="tbl">
+              <thead><tr><th>Lieferjahr</th>
+                <th class="num">Min ({einheit})</th>
+                <th class="num">Ø ({einheit})</th>
+                <th class="num">Max ({einheit})</th></tr></thead>
+              <tbody>{zeilen_stat}</tbody>
+            </table></div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        # Einordnung: aktueller Preis ggue. Durchschnitt (Ampel) + Lage zu Min/Max
+        einordnung = ""
+        for _, r in stats.iterrows():
+            jahr, mn, avg, mx = r["Lieferjahr"], r["min"], r["mean"], r["max"]
+            aktuell = df[df["Lieferjahr"] == jahr].sort_values("Datum")["Wert"].iloc[-1]
+            abw = (aktuell - avg) / avg * 100 if avg else 0.0
+            if abw > 1:
+                dot, txt = "red", "über Ø (teurer als Schnitt)"
+            elif abw < -1:
+                dot, txt = "green", "unter Ø (günstiger als Schnitt)"
+            else:
+                dot, txt = "yellow", "auf Ø-Niveau"
+            if mx > mn:
+                anteil = (aktuell - mn) / (mx - mn)
+                lage = "nahe Minimum" if anteil < 0.33 else ("nahe Maximum" if anteil > 0.66 else "im Mittelfeld")
+            else:
+                lage = "konstant"
+            einordnung += (
+                f"<div class='kpi-amp'><span class='dot {dot}'></span>"
+                f"<b>Cal {jahr}</b>&nbsp;aktuell {aktuell:.{nk}f} {einheit} · "
+                f"{abw:+.1f} % ggü. Ø · {txt} · {lage}</div>"
+            )
+        st.markdown(einordnung, unsafe_allow_html=True)
 
 
 # --------------------------------------------------------------------------
@@ -443,23 +442,22 @@ if vergabepreis > 0 and marktpreis > 0:
 
 
 # --------------------------------------------------------------------------
-# Tabelle (eigenes dunkles HTML)
+# Tabelle (eigenes dunkles HTML, aufklappbar)
 # --------------------------------------------------------------------------
-st.markdown('<div class="eyebrow">Rohdaten</div>', unsafe_allow_html=True)
-st.subheader("Daten")
 if not df.empty:
-    tab = df.sort_values("Datum", ascending=False)
-    zeilen = "".join(
-        f"<tr><td>{d.strftime('%d.%m.%Y')}</td>"
-        f"<td class='num'>{w:.{nk}f}</td><td>{j}</td></tr>"
-        for d, w, j in zip(tab["Datum"], tab["Wert"], tab["Lieferjahr"])
-    )
-    st.markdown(
-        f"""
-        <div class="tbl-wrap"><table class="tbl">
-          <thead><tr><th>Datum</th><th class="num">Preis ({einheit})</th><th>Lieferjahr</th></tr></thead>
-          <tbody>{zeilen}</tbody>
-        </table></div>
-        """,
-        unsafe_allow_html=True,
-    )
+    with st.expander("Rohdaten anzeigen", expanded=False):
+        tab = df.sort_values("Datum", ascending=False)
+        zeilen = "".join(
+            f"<tr><td>{d.strftime('%d.%m.%Y')}</td>"
+            f"<td class='num'>{w:.{nk}f}</td><td>{j}</td></tr>"
+            for d, w, j in zip(tab["Datum"], tab["Wert"], tab["Lieferjahr"])
+        )
+        st.markdown(
+            f"""
+            <div class="tbl-wrap"><table class="tbl">
+              <thead><tr><th>Datum</th><th class="num">Preis ({einheit})</th><th>Lieferjahr</th></tr></thead>
+              <tbody>{zeilen}</tbody>
+            </table></div>
+            """,
+            unsafe_allow_html=True,
+        )
