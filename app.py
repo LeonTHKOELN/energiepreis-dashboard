@@ -19,7 +19,8 @@ from streamlit_gsheets import GSheetsConnection
 # --------------------------------------------------------------------------
 # Konfiguration
 # --------------------------------------------------------------------------
-st.set_page_config(page_title="Energiepreis-Monitoring", page_icon="⚡", layout="wide")
+st.set_page_config(page_title="Energiepreis-Monitoring", page_icon="⚡",
+                   layout="wide", initial_sidebar_state="collapsed")
 
 BASE_DIR = Path(__file__).resolve().parent
 LOGO = BASE_DIR / "logo.png"
@@ -60,12 +61,13 @@ st.markdown(
     footer { display: none; }
     .block-container { padding-top: 2.2rem; padding-bottom: 3rem; }
 
-    /* Sidebar dunkel + helle Schrift */
-    [data-testid="stSidebar"] {
-        background: #0E1B2A;
-        border-right: 1px solid rgba(0,194,255,.14);
-    }
-    [data-testid="stSidebar"] *, [data-testid="stWidgetLabel"] * { color: #D7E6F0 !important; }
+    /* Sidebar wird nicht mehr gebraucht (Filter ist oben im Hauptbereich) */
+    [data-testid="stSidebar"],
+    [data-testid="stSidebarCollapsedControl"],
+    [data-testid="collapsedControl"] { display: none !important; }
+
+    /* Widget-Beschriftungen hell */
+    [data-testid="stWidgetLabel"] * { color: #D7E6F0 !important; }
 
     /* Titel / Ueberschriften / Bildunterschriften fest hell */
     h1 { color: #EEF6FC !important; font-weight: 700 !important; }
@@ -78,24 +80,6 @@ st.markdown(
 
     /* Logo als weisses Chip, damit es auf Dunkel sauber sitzt */
     [data-testid="stImage"] img { background: #ffffff; padding: 10px 16px; border-radius: 12px; }
-
-    /* Sidebar-Oeffnen-Button gross und leuchtend (wenn Sidebar zugeklappt) */
-    [data-testid="stSidebarCollapsedControl"],
-    [data-testid="collapsedControl"] {
-        background: #0E7FB0 !important;
-        border: 1px solid rgba(0,194,255,.6) !important;
-        border-radius: 12px !important;
-        box-shadow: 0 0 16px rgba(0,194,255,.55) !important;
-        padding: 6px 8px !important;
-        top: .7rem !important; left: .7rem !important;
-    }
-    [data-testid="stSidebarCollapsedControl"] svg,
-    [data-testid="collapsedControl"] svg,
-    [data-testid="stSidebarCollapsedControl"] button,
-    [data-testid="collapsedControl"] button {
-        width: 30px !important; height: 30px !important;
-        color: #FFFFFF !important; fill: #FFFFFF !important;
-    }
 
     /* Eyebrow-Label ueber Sektionen */
     .eyebrow {
@@ -194,22 +178,40 @@ alle_jahre = sorted(data["Lieferjahr"].unique())
 
 
 # --------------------------------------------------------------------------
-# Sidebar – Filter (mit individuellem Datumsbereich)
+# Zeitraum-Optionen
 # --------------------------------------------------------------------------
-st.sidebar.header("Filter")
-auswahl = st.sidebar.multiselect("Lieferjahr", options=alle_jahre, default=alle_jahre)
-
 ZEITRAEUME = {"Letzte 30 Tage": 30, "Letzte 60 Tage": 60,
               "Letzte 90 Tage": 90, "Benutzerdefiniert": None}
-wahl = st.sidebar.radio("Zeitraum", options=list(ZEITRAEUME), index=0)
-st.sidebar.caption('„Benutzerdefiniert" öffnet ein eigenes Von–Bis-Feld.')
-
 max_date = data["Datum"].max()
 min_date = data["Datum"].min()
 
+
+# --------------------------------------------------------------------------
+# Header
+# --------------------------------------------------------------------------
+head_logo, head_titel = st.columns([1, 5], vertical_alignment="center")
+with head_logo:
+    if LOGO.exists():
+        st.image(LOGO, width=210)
+with head_titel:
+    st.markdown('<div class="eyebrow">Energiebeschaffung · EEX-Kalenderjahr-Futures</div>',
+                unsafe_allow_html=True)
+    st.title("Energiepreis-Monitoring")
+
+
+# --------------------------------------------------------------------------
+# Filter (Hauptbereich, immer sichtbar)
+# --------------------------------------------------------------------------
+st.markdown('<div class="eyebrow">Filter</div>', unsafe_allow_html=True)
+f_jahr, f_zeit = st.columns([1.2, 2])
+with f_jahr:
+    auswahl = st.multiselect("Lieferjahr", options=alle_jahre, default=alle_jahre)
+with f_zeit:
+    wahl = st.radio("Zeitraum", options=list(ZEITRAEUME), index=0, horizontal=True)
+
 if ZEITRAEUME[wahl] is None:
     default_von = max(min_date, max_date - pd.Timedelta(days=30)).date()
-    sel = st.sidebar.date_input(
+    sel = st.date_input(
         "Von – Bis",
         value=(default_von, max_date.date()),
         min_value=min_date.date(), max_value=max_date.date(),
@@ -227,19 +229,6 @@ else:
     maske = data["Datum"] >= (max_date - pd.Timedelta(days=tage))
 
 df = data[(data["Lieferjahr"].isin(auswahl)) & maske]
-
-
-# --------------------------------------------------------------------------
-# Header
-# --------------------------------------------------------------------------
-head_logo, head_titel = st.columns([1, 5], vertical_alignment="center")
-with head_logo:
-    if LOGO.exists():
-        st.image(LOGO, width=210)
-with head_titel:
-    st.markdown('<div class="eyebrow">Energiebeschaffung · EEX-Kalenderjahr-Futures</div>',
-                unsafe_allow_html=True)
-    st.title("Energiepreis-Monitoring")
 
 st.caption(
     f"Letzter Handelstag: {max_date.strftime('%d.%m.%Y')}  ·  "
