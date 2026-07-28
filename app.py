@@ -209,36 +209,36 @@ with head_titel:
 
 
 # --------------------------------------------------------------------------
-# Filter (Hauptbereich, immer sichtbar)
+# Filter (aufklappbar)
 # --------------------------------------------------------------------------
-st.markdown('<div class="eyebrow">Filter</div>', unsafe_allow_html=True)
-f_jahr, f_zeit, f_einheit = st.columns([1.2, 1.8, 0.8])
-with f_jahr:
-    auswahl = st.multiselect("Lieferjahr", options=alle_jahre, default=alle_jahre)
-with f_zeit:
-    wahl = st.radio("Zeitraum", options=list(ZEITRAEUME), index=0, horizontal=True)
-with f_einheit:
-    einheit = st.radio("Einheit", options=list(EINHEITEN), index=0)
-faktor, nk = EINHEITEN[einheit]
+with st.expander("🔎 Filter", expanded=True):
+    f_jahr, f_zeit, f_einheit = st.columns([1.2, 1.8, 0.8])
+    with f_jahr:
+        auswahl = st.multiselect("Lieferjahr", options=alle_jahre, default=alle_jahre)
+    with f_zeit:
+        wahl = st.radio("Zeitraum", options=list(ZEITRAEUME), index=0, horizontal=True)
+    with f_einheit:
+        einheit = st.radio("Einheit", options=list(EINHEITEN), index=0)
+    faktor, nk = EINHEITEN[einheit]
 
-if ZEITRAEUME[wahl] is None:
-    default_von = max(min_date, max_date - pd.Timedelta(days=30)).date()
-    sel = st.date_input(
-        "Von – Bis",
-        value=(default_von, max_date.date()),
-        min_value=min_date.date(), max_value=max_date.date(),
-        format="DD.MM.YYYY",
-    )
-    if isinstance(sel, (list, tuple)):
-        von, bis = (sel[0], sel[1]) if len(sel) == 2 else (sel[0], sel[0])
+    if ZEITRAEUME[wahl] is None:
+        default_von = max(min_date, max_date - pd.Timedelta(days=30)).date()
+        sel = st.date_input(
+            "Von – Bis",
+            value=(default_von, max_date.date()),
+            min_value=min_date.date(), max_value=max_date.date(),
+            format="DD.MM.YYYY",
+        )
+        if isinstance(sel, (list, tuple)):
+            von, bis = (sel[0], sel[1]) if len(sel) == 2 else (sel[0], sel[0])
+        else:
+            von = bis = sel
+        zeit_label = f"{von.strftime('%d.%m.%Y')} – {bis.strftime('%d.%m.%Y')}"
+        maske = (data["Datum"].dt.date >= von) & (data["Datum"].dt.date <= bis)
     else:
-        von = bis = sel
-    zeit_label = f"{von.strftime('%d.%m.%Y')} – {bis.strftime('%d.%m.%Y')}"
-    maske = (data["Datum"].dt.date >= von) & (data["Datum"].dt.date <= bis)
-else:
-    tage = ZEITRAEUME[wahl]
-    zeit_label = f"letzte {tage} Tage"
-    maske = data["Datum"] >= (max_date - pd.Timedelta(days=tage))
+        tage = ZEITRAEUME[wahl]
+        zeit_label = f"letzte {tage} Tage"
+        maske = data["Datum"] >= (max_date - pd.Timedelta(days=tage))
 
 df = data[(data["Lieferjahr"].isin(auswahl)) & maske].copy()
 df["Wert"] = df["Preis"] * faktor
@@ -303,6 +303,50 @@ with st.expander("Wie sind die Kennzahlen zu lesen?"):
         "🟡 stabil · 🔴 Preis gestiegen (Beschaffung wird teurer).\n\n"
         "Kurz gesagt: Die Kennzahl zeigt, in welche Richtung sich der Beschaffungspreis "
         "zuletzt bewegt hat."
+    )
+
+
+# --------------------------------------------------------------------------
+# Vergabepreis-Vergleich (Aufschlag ggue. Marktpreis)
+# --------------------------------------------------------------------------
+st.markdown('<div class="eyebrow">Vergabe</div>', unsafe_allow_html=True)
+st.subheader("Vergabepreis-Vergleich")
+
+v1, v2 = st.columns([1, 1])
+with v1:
+    ref_jahr = st.selectbox("Lieferjahr", options=alle_jahre, index=0)
+reihe_ref = data[data["Lieferjahr"] == ref_jahr].sort_values("Datum")
+marktpreis = reihe_ref["Preis"].iloc[-1] * faktor if not reihe_ref.empty else 0.0
+with v2:
+    schritt = 0.1 if einheit == "EUR/MWh" else 0.01
+    vergabepreis = st.number_input(
+        f"Vergabepreis ({einheit})",
+        min_value=0.0, value=round(marktpreis, nk), step=schritt, format=f"%.{nk}f",
+    )
+
+if vergabepreis > 0 and marktpreis > 0:
+    auf_wert = vergabepreis - marktpreis
+    auf_pct = auf_wert / marktpreis * 100
+    if auf_wert > 0:
+        farbe, label = "#FF6B7A", "Aufschlag über Marktpreis"
+    elif auf_wert < 0:
+        farbe, label = "#37E6A6", "Abschlag unter Marktpreis"
+    else:
+        farbe, label = "#FFC24B", "auf Marktpreisniveau"
+    st.markdown(
+        f"""
+        <div class="kpi-card">
+          <div class="kpi-eyebrow">{label} · Cal {ref_jahr}</div>
+          <div class="kpi-price" style="color:{farbe}">{auf_wert:+.{nk}f}<span class="kpi-unit">{einheit}</span></div>
+          <div class="kpi-delta" style="color:{farbe}">{auf_pct:+.1f} % gegenüber Marktpreis</div>
+          <div class="kpi-amp">Marktpreis {marktpreis:.{nk}f} · Vergabepreis {vergabepreis:.{nk}f} {einheit}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.caption(
+        "Marktpreis = aktueller EEX-Settlementpreis des gewählten Lieferjahres. "
+        "Der Aufschlag ist die Differenz deines Vergabepreises dazu (z. B. Marge, Netzentgelte, Vertrieb)."
     )
 
 
