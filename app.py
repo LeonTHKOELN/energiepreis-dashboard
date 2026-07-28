@@ -79,6 +79,24 @@ st.markdown(
     /* Logo als weisses Chip, damit es auf Dunkel sauber sitzt */
     [data-testid="stImage"] img { background: #ffffff; padding: 10px 16px; border-radius: 12px; }
 
+    /* Sidebar-Oeffnen-Button gross und leuchtend (wenn Sidebar zugeklappt) */
+    [data-testid="stSidebarCollapsedControl"],
+    [data-testid="collapsedControl"] {
+        background: #0E7FB0 !important;
+        border: 1px solid rgba(0,194,255,.6) !important;
+        border-radius: 12px !important;
+        box-shadow: 0 0 16px rgba(0,194,255,.55) !important;
+        padding: 6px 8px !important;
+        top: .7rem !important; left: .7rem !important;
+    }
+    [data-testid="stSidebarCollapsedControl"] svg,
+    [data-testid="collapsedControl"] svg,
+    [data-testid="stSidebarCollapsedControl"] button,
+    [data-testid="collapsedControl"] button {
+        width: 30px !important; height: 30px !important;
+        color: #FFFFFF !important; fill: #FFFFFF !important;
+    }
+
     /* Eyebrow-Label ueber Sektionen */
     .eyebrow {
         color: #5FCBF2; font-size: .72rem; letter-spacing: .22em;
@@ -176,17 +194,39 @@ alle_jahre = sorted(data["Lieferjahr"].unique())
 
 
 # --------------------------------------------------------------------------
-# Sidebar – Filter
+# Sidebar – Filter (mit individuellem Datumsbereich)
 # --------------------------------------------------------------------------
 st.sidebar.header("Filter")
 auswahl = st.sidebar.multiselect("Lieferjahr", options=alle_jahre, default=alle_jahre)
-tage = st.sidebar.radio(
-    "Zeitraum", options=[30, 60, 90], index=0, format_func=lambda d: f"Letzte {d} Tage"
-)
+
+ZEITRAEUME = {"Letzte 30 Tage": 30, "Letzte 60 Tage": 60,
+              "Letzte 90 Tage": 90, "Benutzerdefiniert": None}
+wahl = st.sidebar.radio("Zeitraum", options=list(ZEITRAEUME), index=0)
+st.sidebar.caption('„Benutzerdefiniert" öffnet ein eigenes Von–Bis-Feld.')
 
 max_date = data["Datum"].max()
-start = max_date - pd.Timedelta(days=tage)
-df = data[(data["Lieferjahr"].isin(auswahl)) & (data["Datum"] >= start)]
+min_date = data["Datum"].min()
+
+if ZEITRAEUME[wahl] is None:
+    default_von = max(min_date, max_date - pd.Timedelta(days=30)).date()
+    sel = st.sidebar.date_input(
+        "Von – Bis",
+        value=(default_von, max_date.date()),
+        min_value=min_date.date(), max_value=max_date.date(),
+        format="DD.MM.YYYY",
+    )
+    if isinstance(sel, (list, tuple)):
+        von, bis = (sel[0], sel[1]) if len(sel) == 2 else (sel[0], sel[0])
+    else:
+        von = bis = sel
+    zeit_label = f"{von.strftime('%d.%m.%Y')} – {bis.strftime('%d.%m.%Y')}"
+    maske = (data["Datum"].dt.date >= von) & (data["Datum"].dt.date <= bis)
+else:
+    tage = ZEITRAEUME[wahl]
+    zeit_label = f"letzte {tage} Tage"
+    maske = data["Datum"] >= (max_date - pd.Timedelta(days=tage))
+
+df = data[(data["Lieferjahr"].isin(auswahl)) & maske]
 
 
 # --------------------------------------------------------------------------
@@ -203,7 +243,7 @@ with head_titel:
 
 st.caption(
     f"Letzter Handelstag: {max_date.strftime('%d.%m.%Y')}  ·  "
-    f"Trend über die letzten {tage} Tage  ·  Ampel: 🟢 gefallen · 🟡 stabil · 🔴 gestiegen"
+    f"Trend: {zeit_label}  ·  Ampel: 🟢 gefallen · 🟡 stabil · 🔴 gestiegen"
 )
 
 
@@ -248,6 +288,18 @@ if auswahl:
         col.markdown(kpi_html(jahr, cur, delta, pct), unsafe_allow_html=True)
 else:
     st.info("Bitte mindestens ein Lieferjahr auswählen.")
+
+with st.expander("Wie sind die Kennzahlen zu lesen?"):
+    st.markdown(
+        "- **Großer Wert:** aktueller Börsen-Settlementpreis (EUR/MWh) für das Lieferjahr.\n"
+        "- **Pfeil + Prozent:** der Trend, also die Veränderung gegenüber dem Anfang des "
+        "gewählten Zeitraums. Beispiel: ▲ +5 % heißt, der Preis liegt aktuell 5 % höher als "
+        "zu Beginn des Zeitraums.\n"
+        "- **Ampel:** 🟢 Preis gefallen (tendenziell günstiger für den Einkauf) · "
+        "🟡 stabil · 🔴 Preis gestiegen (Beschaffung wird teurer).\n\n"
+        "Kurz gesagt: Die Kennzahl zeigt, in welche Richtung sich der Beschaffungspreis "
+        "zuletzt bewegt hat."
+    )
 
 
 # --------------------------------------------------------------------------
@@ -313,13 +365,3 @@ if not df.empty:
         """,
         unsafe_allow_html=True,
     )
-
-
-# --------------------------------------------------------------------------
-# KI-Zusammenfassung (Platzhalter – SAIA-Anbindung folgt)
-# --------------------------------------------------------------------------
-st.markdown('<div class="eyebrow">Analyse</div>', unsafe_allow_html=True)
-st.subheader("KI-Zusammenfassung")
-st.caption("Nächster Schritt: SAIA/KISSKI-Aufruf aus Finale.py einhängen (Key aus st.secrets).")
-if st.button("Zusammenfassung erstellen"):
-    st.info("SAIA-Anbindung folgt.")
