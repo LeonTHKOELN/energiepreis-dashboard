@@ -312,9 +312,17 @@ with st.expander("Wie sind die Kennzahlen zu lesen?"):
 st.markdown('<div class="eyebrow">Verlauf</div>', unsafe_allow_html=True)
 st.subheader(f"Preisverlauf ({einheit})")
 
+z1, _z2 = st.columns([1, 3])
+with z1:
+    schritt_z = 0.5 if einheit == "EUR/MWh" else 0.05
+    zielpreis = st.number_input(
+        f"Zielpreis ({einheit})", min_value=0.0, value=0.0, step=schritt_z,
+        format=f"%.{nk}f", help="0 = keine Linie. Darunter gilt als Kaufsignal.",
+    )
+
 if not df.empty:
     jahre_im_chart = [j for j in FARBEN if j in df["Lieferjahr"].unique()]
-    chart = (
+    linie = (
         alt.Chart(df)
         .mark_line(strokeWidth=2.6, interpolate="monotone")
         .encode(
@@ -332,6 +340,19 @@ if not df.empty:
                 alt.Tooltip("Wert:Q", title=einheit, format=f".{nk}f"),
             ],
         )
+    )
+    ebenen = [linie]
+    if zielpreis > 0:
+        regel = (
+            alt.Chart(pd.DataFrame({"Zielpreis": [zielpreis]}))
+            .mark_rule(color="#FFD24B", strokeDash=[6, 4], strokeWidth=1.8)
+            .encode(y="Zielpreis:Q",
+                    tooltip=alt.Tooltip("Zielpreis:Q", title=f"Zielpreis ({einheit})", format=f".{nk}f"))
+        )
+        ebenen.append(regel)
+
+    chart = (
+        alt.layer(*ebenen)
         .properties(height=380)
         .configure(background="transparent")
         .configure_view(strokeWidth=0)
@@ -345,6 +366,46 @@ if not df.empty:
         f"Der Wert ist der Börsen-Settlementpreis in {einheit}, zu dem Strom für "
         "Lieferung im jeweiligen Jahr gehandelt wird. "
         "x-Achse: Handelstag · y-Achse: Preis · steigende Linie = Beschaffung wird teurer."
+    )
+
+    # Kaufsignal: welche Lieferjahre liegen aktuell unter dem Zielpreis?
+    if zielpreis > 0:
+        signale = ""
+        for jahr in [j for j in jahre_im_chart]:
+            reihe = df[df["Lieferjahr"] == jahr].sort_values("Datum")
+            aktuell = reihe["Wert"].iloc[-1]
+            unter = aktuell <= zielpreis
+            dot = "green" if unter else "red"
+            txt = "unter Zielpreis · Kaufsignal" if unter else "über Zielpreis"
+            signale += (
+                f"<div class='kpi-amp'><span class='dot {dot}'></span>"
+                f"<b>Cal {jahr}</b>&nbsp;{aktuell:.{nk}f} {einheit} — {txt}</div>"
+            )
+        st.markdown(signale, unsafe_allow_html=True)
+
+    # Min / Durchschnitt / Max je Lieferjahr im gewählten Zeitraum
+    st.markdown('<div class="eyebrow">Statistik im Zeitraum</div>', unsafe_allow_html=True)
+    stats = (
+        df.groupby("Lieferjahr")["Wert"].agg(["min", "mean", "max"]).reset_index()
+    )
+    zeilen_stat = "".join(
+        f"<tr><td>{r['Lieferjahr']}</td>"
+        f"<td class='num'>{r['min']:.{nk}f}</td>"
+        f"<td class='num'>{r['mean']:.{nk}f}</td>"
+        f"<td class='num'>{r['max']:.{nk}f}</td></tr>"
+        for _, r in stats.iterrows()
+    )
+    st.markdown(
+        f"""
+        <div class="tbl-wrap"><table class="tbl">
+          <thead><tr><th>Lieferjahr</th>
+            <th class="num">Min ({einheit})</th>
+            <th class="num">Ø ({einheit})</th>
+            <th class="num">Max ({einheit})</th></tr></thead>
+          <tbody>{zeilen_stat}</tbody>
+        </table></div>
+        """,
+        unsafe_allow_html=True,
     )
 
 
