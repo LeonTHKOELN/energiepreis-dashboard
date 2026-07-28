@@ -360,19 +360,20 @@ v1, v2 = st.columns([1, 1])
 with v1:
     ref_jahr = st.selectbox("Lieferjahr", options=alle_jahre, index=0)
 reihe_ref = data[data["Lieferjahr"] == ref_jahr].sort_values("Datum")
-marktpreis = reihe_ref["Preis"].iloc[-1] * V_FAKTOR if not reihe_ref.empty else 0.0
+marktpreis = round(reihe_ref["Preis"].iloc[-1] * V_FAKTOR, V_NK) if not reihe_ref.empty else 0.0
 with v2:
     vergabepreis = st.number_input(
         f"Vergabepreis ({V_EINHEIT})",
-        min_value=0.0, value=round(marktpreis, V_NK), step=0.01, format=f"%.{V_NK}f",
+        min_value=0.0, value=marktpreis, step=0.01, format=f"%.{V_NK}f",
     )
 
 if vergabepreis > 0 and marktpreis > 0:
     auf_wert = vergabepreis - marktpreis
     auf_pct = auf_wert / marktpreis * 100
-    if auf_wert > 0:
+    eps = 0.5 * 10 ** (-V_NK)   # halbe Anzeigestelle Toleranz
+    if auf_wert > eps:
         farbe, label = "#FF6B7A", "Aufschlag über Marktpreis"
-    elif auf_wert < 0:
+    elif auf_wert < -eps:
         farbe, label = "#37E6A6", "Abschlag unter Marktpreis"
     else:
         farbe, label = "#FFC24B", "auf Marktpreisniveau"
