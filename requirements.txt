@@ -2,3 +2,4 @@ streamlit>=1.40
 pandas>=2.2
 altair>=6.0.0
 st-gsheets-connection
+ 
