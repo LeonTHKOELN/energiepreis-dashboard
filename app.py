@@ -348,7 +348,7 @@ if not df.empty:
     )
 
     # Statistik + Einordnung (aufklappbar)
-    with st.expander("Statistik im Zeitraum", expanded=True):
+    with st.expander("Statistik im Zeitraum", expanded=False):
         stats = df.groupby("Lieferjahr")["Wert"].agg(["min", "mean", "max"]).reset_index()
         zeilen_stat = "".join(
             f"<tr><td>{r['Lieferjahr']}</td>"
