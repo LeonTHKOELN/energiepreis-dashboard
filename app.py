@@ -69,6 +69,12 @@ st.markdown(
     /* Widget-Beschriftungen hell */
     [data-testid="stWidgetLabel"] * { color: #D7E6F0 !important; }
 
+    /* Radio-Optionen (Zeitraum) gut lesbar */
+    [data-testid="stRadio"] label,
+    [data-testid="stRadio"] label div,
+    [data-testid="stRadio"] label p,
+    [data-testid="stRadio"] label span { color: #E6F1F8 !important; }
+
     /* Titel / Ueberschriften / Bildunterschriften fest hell */
     h1 { color: #EEF6FC !important; font-weight: 700 !important; }
     h2, h3 { color: #DCEAF3 !important; }
