@@ -31,8 +31,11 @@ SHEETS = {
     "2029": "https://docs.google.com/spreadsheets/d/1glQGEQmyhM_tgmA1ID5LTkuayLrzsDTTk9AKFhp0Heg/edit",
 }
 
-EINHEIT = "EUR/MWh"
+ROH_EINHEIT = "EUR/MWh"   # Einheit, wie sie in den Google Sheets steht
 AMPEL_SCHWELLE = 1.0
+
+# Anzeige-Einheiten: Label -> (Faktor gegenüber EUR/MWh, Nachkommastellen)
+EINHEITEN = {"EUR/MWh": (1.0, 2), "ct/kWh": (0.1, 2)}
 
 # Klar unterscheidbare Farben pro Lieferjahr (Cyan / Blau / Violett)
 FARBEN = {"2027": "#34E0FF", "2028": "#5B8DEF", "2029": "#C084FC"}
@@ -157,7 +160,7 @@ def load_sheet(url: str, jahr: str) -> pd.DataFrame:
     df["Datum"] = pd.to_datetime(raw[date_col], errors="coerce", dayfirst=True)
     df["Preis"] = pd.to_numeric(
         raw[price_col].astype(str)
-        .str.replace(EINHEIT, "", regex=False)
+        .str.replace(ROH_EINHEIT, "", regex=False)
         .str.replace(",", ".", regex=False)
         .str.strip(),
         errors="coerce",
@@ -209,11 +212,14 @@ with head_titel:
 # Filter (Hauptbereich, immer sichtbar)
 # --------------------------------------------------------------------------
 st.markdown('<div class="eyebrow">Filter</div>', unsafe_allow_html=True)
-f_jahr, f_zeit = st.columns([1.2, 2])
+f_jahr, f_zeit, f_einheit = st.columns([1.2, 1.8, 0.8])
 with f_jahr:
     auswahl = st.multiselect("Lieferjahr", options=alle_jahre, default=alle_jahre)
 with f_zeit:
     wahl = st.radio("Zeitraum", options=list(ZEITRAEUME), index=0, horizontal=True)
+with f_einheit:
+    einheit = st.radio("Einheit", options=list(EINHEITEN), index=0)
+faktor, nk = EINHEITEN[einheit]
 
 if ZEITRAEUME[wahl] is None:
     default_von = max(min_date, max_date - pd.Timedelta(days=30)).date()
@@ -234,7 +240,8 @@ else:
     zeit_label = f"letzte {tage} Tage"
     maske = data["Datum"] >= (max_date - pd.Timedelta(days=tage))
 
-df = data[(data["Lieferjahr"].isin(auswahl)) & maske]
+df = data[(data["Lieferjahr"].isin(auswahl)) & maske].copy()
+df["Wert"] = df["Preis"] * faktor
 
 st.caption(
     f"Letzter Handelstag: {max_date.strftime('%d.%m.%Y')}  ·  "
@@ -258,11 +265,13 @@ def kpi_html(jahr, cur, delta, pct):
         richtung, pfeil = "down", "▼"
     else:
         richtung, pfeil = "flat", "▬"
+    cur_d = cur * faktor
+    delta_d = delta * faktor
     return f"""
     <div class="kpi-card">
       <div class="kpi-eyebrow">Cal {jahr}</div>
-      <div class="kpi-price">{cur:.2f}<span class="kpi-unit">{EINHEIT}</span></div>
-      <div class="kpi-delta {richtung}">{pfeil} {delta:+.2f} ({pct:+.1f} %)</div>
+      <div class="kpi-price">{cur_d:.{nk}f}<span class="kpi-unit">{einheit}</span></div>
+      <div class="kpi-delta {richtung}">{pfeil} {delta_d:+.{nk}f} ({pct:+.1f} %)</div>
       <div class="kpi-amp"><span class="dot {dot}"></span>{amp}</div>
       <div class="kpi-bar {richtung}"></div>
     </div>
@@ -301,7 +310,7 @@ with st.expander("Wie sind die Kennzahlen zu lesen?"):
 # Preisverlauf (Altair, dunkel)
 # --------------------------------------------------------------------------
 st.markdown('<div class="eyebrow">Verlauf</div>', unsafe_allow_html=True)
-st.subheader(f"Preisverlauf ({EINHEIT})")
+st.subheader(f"Preisverlauf ({einheit})")
 
 if not df.empty:
     jahre_im_chart = [j for j in FARBEN if j in df["Lieferjahr"].unique()]
@@ -310,7 +319,7 @@ if not df.empty:
         .mark_line(strokeWidth=2.6, interpolate="monotone")
         .encode(
             x=alt.X("Datum:T", title="Handelstag"),
-            y=alt.Y("Preis:Q", title=EINHEIT, scale=alt.Scale(zero=False)),
+            y=alt.Y("Wert:Q", title=einheit, scale=alt.Scale(zero=False)),
             color=alt.Color(
                 "Lieferjahr:N",
                 scale=alt.Scale(domain=jahre_im_chart,
@@ -320,7 +329,7 @@ if not df.empty:
             tooltip=[
                 alt.Tooltip("Datum:T", title="Datum"),
                 alt.Tooltip("Lieferjahr:N", title="Lieferjahr"),
-                alt.Tooltip("Preis:Q", title=EINHEIT, format=".2f"),
+                alt.Tooltip("Wert:Q", title=einheit, format=f".{nk}f"),
             ],
         )
         .properties(height=380)
@@ -333,7 +342,7 @@ if not df.empty:
     st.altair_chart(chart, use_container_width=True, theme=None)
     st.caption(
         "Jede Linie steht für ein Lieferjahr (EEX-Kalenderjahr-Future). "
-        "Der Wert ist der Börsen-Settlementpreis in EUR/MWh, zu dem Strom für "
+        f"Der Wert ist der Börsen-Settlementpreis in {einheit}, zu dem Strom für "
         "Lieferung im jeweiligen Jahr gehandelt wird. "
         "x-Achse: Handelstag · y-Achse: Preis · steigende Linie = Beschaffung wird teurer."
     )
@@ -348,13 +357,13 @@ if not df.empty:
     tab = df.sort_values("Datum", ascending=False)
     zeilen = "".join(
         f"<tr><td>{d.strftime('%d.%m.%Y')}</td>"
-        f"<td class='num'>{p:.2f}</td><td>{j}</td></tr>"
-        for d, p, j in zip(tab["Datum"], tab["Preis"], tab["Lieferjahr"])
+        f"<td class='num'>{w:.{nk}f}</td><td>{j}</td></tr>"
+        for d, w, j in zip(tab["Datum"], tab["Wert"], tab["Lieferjahr"])
     )
     st.markdown(
         f"""
         <div class="tbl-wrap"><table class="tbl">
-          <thead><tr><th>Datum</th><th class="num">Preis ({EINHEIT})</th><th>Lieferjahr</th></tr></thead>
+          <thead><tr><th>Datum</th><th class="num">Preis ({einheit})</th><th>Lieferjahr</th></tr></thead>
           <tbody>{zeilen}</tbody>
         </table></div>
         """,
