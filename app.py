@@ -688,17 +688,34 @@ with st.expander("Vergabepreis-Vergleich", expanded=False):
         },
         key=str.casefold,
     )
-    neue_anbieter_option = "➕ Neuen Anbieter hinzufügen"
+    # Auswahl und Aktion stehen bewusst nebeneinander: links vorhandener Anbieter,
+    # rechts der Wechsel in den Modus „Neuen Anbieter anlegen“.
+    if "neuer_anbieter_modus" not in st.session_state:
+        st.session_state.neuer_anbieter_modus = False
 
-    with st.form("angebot_speichern_form", clear_on_submit=True):
+    auswahl_col, neu_col = st.columns([4.5, 1.5], vertical_alignment="bottom")
+    with auswahl_col:
         anbieter_auswahl = st.selectbox(
             "Anbieter auswählen",
-            options=[neue_anbieter_option] + anbieter_optionen_speichern,
+            options=["— Anbieter auswählen —"] + anbieter_optionen_speichern,
             index=0,
+            disabled=st.session_state.neuer_anbieter_modus,
+            key="anbieter_dropdown_speichern",
         )
 
+    with neu_col:
+        button_text = (
+            "↩ Vorhandenen wählen"
+            if st.session_state.neuer_anbieter_modus
+            else "➕ Neuer Anbieter"
+        )
+        if st.button(button_text, use_container_width=True, key="toggle_neuer_anbieter"):
+            st.session_state.neuer_anbieter_modus = not st.session_state.neuer_anbieter_modus
+            st.rerun()
+
+    with st.form("angebot_speichern_form", clear_on_submit=True):
         neuer_anbieter = ""
-        if anbieter_auswahl == neue_anbieter_option:
+        if st.session_state.neuer_anbieter_modus:
             neuer_anbieter = st.text_input(
                 "Neuen Anbieter eingeben",
                 placeholder="z. B. Stadtwerke Musterstadt",
@@ -715,13 +732,13 @@ with st.expander("Vergabepreis-Vergleich", expanded=False):
 
     anbieter = (
         neuer_anbieter.strip()
-        if anbieter_auswahl == neue_anbieter_option
-        else str(anbieter_auswahl).strip()
+        if st.session_state.neuer_anbieter_modus
+        else ("" if anbieter_auswahl == "— Anbieter auswählen —" else str(anbieter_auswahl).strip())
     )
 
     if angebot_speichern:
         if not anbieter:
-            st.error("Bitte einen vorhandenen Anbieter auswählen oder einen neuen Anbieter eingeben.")
+            st.error("Bitte links einen Anbieter auswählen oder rechts einen neuen Anbieter anlegen.")
         elif vergabepreis <= 0 or marktpreis <= 0:
             st.error("Marktpreis und Vergabepreis müssen größer als null sein.")
         else:
