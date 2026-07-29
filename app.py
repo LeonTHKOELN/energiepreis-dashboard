@@ -10,6 +10,7 @@ Eine .streamlit/config.toml wird nicht mehr benoetigt.
 """
 
 from pathlib import Path
+from uuid import uuid4
 
 import altair as alt
 import pandas as pd
@@ -34,6 +35,10 @@ SHEETS = {
 # Sheet mit der taeglich ueberschriebenen KI-Marktanalyse (ein Textblock)
 KI_SHEET_URL = "https://docs.google.com/spreadsheets/d/1sWpKfXkTIA-0G6HlhkWiM32ZZcu7rL73zsbPOLTB7_4/edit"
 
+# Gemeinsames Google Sheet für dauerhaft gespeicherte Ampel-Grenzwerte
+# und gespeicherte Angebote.
+DASHBOARD_STORE_URL = "https://docs.google.com/spreadsheets/d/1gKuHzknlzCSyuWf1IdkrbKm2OoN5VYv0YZqf_Ho0Tsg/edit"
+
 ROH_EINHEIT = "EUR/MWh"   # Einheit, wie sie in den Google Sheets steht
 AMPEL_SCHWELLE = 1.0
 
@@ -48,7 +53,92 @@ EINHEITEN = {"EUR/MWh": (1.0, 2), "ct/kWh": (0.1, 2)}
 # Klar unterscheidbare Farben pro Lieferjahr (Cyan / Blau / Violett)
 FARBEN = {"2027": "#34E0FF", "2028": "#5B8DEF", "2029": "#C084FC"}
 
+
 conn = st.connection("gsheets", type=GSheetsConnection)
+
+STORE_COLUMNS = [
+    "Typ",
+    "ID",
+    "Wert",
+    "Zeitstempel",
+    "Anbieter",
+    "Lieferjahr",
+    "Marktpreis_ct_kWh",
+    "Vergabepreis_ct_kWh",
+    "Aufschlag_ct_kWh",
+    "Aufschlag_pct",
+    "Bewertung",
+    "Status",
+]
+
+
+def _empty_store() -> pd.DataFrame:
+    return pd.DataFrame(columns=STORE_COLUMNS)
+
+
+def load_dashboard_store() -> pd.DataFrame:
+    """Liest Einstellungen und Angebote ohne Cache aus dem gemeinsamen Google Sheet."""
+    try:
+        raw = conn.read(spreadsheet=DASHBOARD_STORE_URL, ttl=0)
+        if raw is None or raw.empty:
+            return _empty_store()
+
+        raw = raw.dropna(how="all").copy()
+        for column in STORE_COLUMNS:
+            if column not in raw.columns:
+                raw[column] = None
+        return raw[STORE_COLUMNS]
+    except Exception:
+        # Ein komplett leeres Sheet kann beim ersten Abruf je nach Connector
+        # noch keine Spalten enthalten. In diesem Fall startet die App leer.
+        return _empty_store()
+
+
+def save_dashboard_store(store: pd.DataFrame) -> None:
+    """Schreibt den vollständigen Einstellungs-/Angebotsspeicher zurück."""
+    store = store.copy()
+    for column in STORE_COLUMNS:
+        if column not in store.columns:
+            store[column] = None
+    conn.update(spreadsheet=DASHBOARD_STORE_URL, data=store[STORE_COLUMNS])
+
+
+def read_setting(store: pd.DataFrame, setting_id: str, default: float) -> float:
+    rows = store[(store["Typ"] == "Einstellung") & (store["ID"] == setting_id)]
+    if rows.empty:
+        return float(default)
+    value = pd.to_numeric(rows.iloc[-1]["Wert"], errors="coerce")
+    return float(value) if pd.notna(value) else float(default)
+
+
+def upsert_setting(store: pd.DataFrame, setting_id: str, value: float) -> pd.DataFrame:
+    store = store.copy()
+    mask = (store["Typ"] == "Einstellung") & (store["ID"] == setting_id)
+    store = store.loc[~mask]
+    row = {column: None for column in STORE_COLUMNS}
+    row.update(
+        {
+            "Typ": "Einstellung",
+            "ID": setting_id,
+            "Wert": float(value),
+            "Zeitstempel": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "Status": "aktiv",
+        }
+    )
+    return pd.concat([store, pd.DataFrame([row])], ignore_index=True)
+
+
+def append_offer(store: pd.DataFrame, offer: dict) -> pd.DataFrame:
+    row = {column: None for column in STORE_COLUMNS}
+    row.update(offer)
+    return pd.concat([store, pd.DataFrame([row])], ignore_index=True)
+
+
+def set_offer_status(store: pd.DataFrame, offer_id: str, status: str) -> pd.DataFrame:
+    store = store.copy()
+    mask = (store["Typ"] == "Angebot") & (store["ID"].astype(str) == str(offer_id))
+    store.loc[mask, "Status"] = status
+    return store
 
 # --------------------------------------------------------------------------
 # Styling – komplettes Theme per CSS (keine config.toml noetig)
@@ -414,48 +504,69 @@ if not df.empty:
 
 
 # --------------------------------------------------------------------------
-# Vergabepreis-Vergleich (immer in ct/kWh, aufklappbar)
+# Vergabepreis-Vergleich, dauerhafte Grenzwerte und Angebotsablage
 # --------------------------------------------------------------------------
-# Beim ersten Start werden die aus den historischen Vergaben abgeleiteten
-# Standardwerte in der Session gespeichert. Änderungen im Dashboard bleiben
-# während der aktuellen Sitzung erhalten.
-if "aufschlag_gruen_max" not in st.session_state:
-    st.session_state.aufschlag_gruen_max = AUFSCHLAG_GRUEN_MAX_DEFAULT
-if "aufschlag_gelb_max" not in st.session_state:
-    st.session_state.aufschlag_gelb_max = AUFSCHLAG_GELB_MAX_DEFAULT
+dashboard_store = load_dashboard_store()
 
-gruen_max = float(st.session_state.aufschlag_gruen_max)
-gelb_max = float(st.session_state.aufschlag_gelb_max)
+# Die Grenzwerte werden beim Öffnen aus Google Sheets gelesen.
+gruen_max = read_setting(
+    dashboard_store, "aufschlag_gruen_max", AUFSCHLAG_GRUEN_MAX_DEFAULT
+)
+gelb_max = read_setting(
+    dashboard_store, "aufschlag_gelb_max", AUFSCHLAG_GELB_MAX_DEFAULT
+)
 
-# Schutz vor einer ungültigen Reihenfolge der Grenzwerte.
-grenzen_gueltig = gelb_max > gruen_max
-effektiv_gelb_max = gelb_max if grenzen_gueltig else gruen_max + 0.1
+# Schutz vor fehlerhaften gespeicherten Grenzen.
+if gelb_max <= gruen_max:
+    gruen_max = AUFSCHLAG_GRUEN_MAX_DEFAULT
+    gelb_max = AUFSCHLAG_GELB_MAX_DEFAULT
 
 with st.expander("Vergabepreis-Vergleich", expanded=False):
-    V_FAKTOR, V_NK, V_EINHEIT = 0.1, 2, "ct/kWh"   # EUR/MWh -> ct/kWh
+    V_FAKTOR, V_NK, V_EINHEIT = 0.1, 2, "ct/kWh"
 
     v1, v2 = st.columns([1, 1])
     with v1:
-        ref_jahr = st.selectbox("Lieferjahr", options=alle_jahre, index=0)
+        ref_jahr = st.selectbox(
+            "Lieferjahr",
+            options=alle_jahre,
+            index=0,
+            key="vergabepreis_lieferjahr",
+        )
+
     reihe_ref = data[data["Lieferjahr"] == ref_jahr].sort_values("Datum")
-    marktpreis = round(reihe_ref["Preis"].iloc[-1] * V_FAKTOR, V_NK) if not reihe_ref.empty else 0.0
+    marktpreis = (
+        round(reihe_ref["Preis"].iloc[-1] * V_FAKTOR, V_NK)
+        if not reihe_ref.empty
+        else 0.0
+    )
+    marktpreis_datum = (
+        reihe_ref["Datum"].iloc[-1].strftime("%d.%m.%Y")
+        if not reihe_ref.empty
+        else "–"
+    )
+
     with v2:
         vergabepreis = st.number_input(
             f"Vergabepreis ({V_EINHEIT})",
-            min_value=0.0, value=marktpreis, step=0.01, format=f"%.{V_NK}f",
+            min_value=0.0,
+            value=float(marktpreis),
+            step=0.01,
+            format=f"%.{V_NK}f",
+            key=f"vergabepreis_{ref_jahr}",
         )
+
+    auf_wert = 0.0
+    auf_pct = 0.0
+    label = "keine Bewertung"
+    farbe = "#9DB3C4"
 
     if vergabepreis > 0 and marktpreis > 0:
         auf_wert = vergabepreis - marktpreis
         auf_pct = auf_wert / marktpreis * 100
 
-        # Ampellogik:
-        # Grün: bis einschließlich unterer Grenze
-        # Gelb: oberhalb der unteren Grenze bis einschließlich oberer Grenze
-        # Rot: oberhalb der oberen Grenze
         if auf_pct <= gruen_max:
             farbe, label = "#37E6A6", "günstiger als üblich"
-        elif auf_pct <= effektiv_gelb_max:
+        elif auf_pct <= gelb_max:
             farbe, label = "#FFC24B", "im üblichen Bereich"
         else:
             farbe, label = "#FF6B7A", "auffällig hoher Aufschlag"
@@ -466,64 +577,248 @@ with st.expander("Vergabepreis-Vergleich", expanded=False):
               <div class="kpi-eyebrow">{label} · Cal {ref_jahr}</div>
               <div class="kpi-price" style="color:{farbe}">{auf_wert:+.{V_NK}f}<span class="kpi-unit">{V_EINHEIT}</span></div>
               <div class="kpi-delta" style="color:{farbe}">{auf_pct:+.1f} % gegenüber Marktpreis</div>
-              <div class="kpi-amp">Marktpreis {marktpreis:.{V_NK}f} · Vergabepreis {vergabepreis:.{V_NK}f} {V_EINHEIT}</div>
+              <div class="kpi-amp">
+                Marktpreis {marktpreis:.{V_NK}f} · Vergabepreis {vergabepreis:.{V_NK}f} {V_EINHEIT}
+              </div>
             </div>
             """,
             unsafe_allow_html=True,
         )
         st.caption(
-            "Marktpreis = aktueller EEX-Settlementpreis des gewählten Lieferjahres, umgerechnet in ct/kWh. "
-            "Der Aufschlag ist die Differenz des Vergabepreises zum Marktpreis und kann unter anderem "
-            "Marge, Bilanzkreis-/Profilkosten und Risikoaufschläge enthalten."
+            f"Verglichen wird mit dem neuesten verfügbaren EEX-Settlementpreis "
+            f"vom {marktpreis_datum}. Der Aufschlag kann unter anderem Marge, "
+            "Bilanzkreis-/Profilkosten und Risikoaufschläge enthalten."
         )
 
-# Separates klappbares Feld direkt unter dem Vergabepreis-Vergleich.
-with st.expander("⚙️ Ampel-Grenzwerte für den Vergabepreis", expanded=False):
-    st.markdown(
-        "Die Bewertung basiert standardmäßig auf den bisherigen Vergaben. "
-        "Die Grenzwerte können für die aktuelle Sitzung angepasst werden."
+    st.divider()
+    st.markdown("#### 💾 Angebot speichern")
+
+    with st.form("angebot_speichern_form", clear_on_submit=True):
+        anbieter = st.text_input(
+            "Anbieter",
+            placeholder="z. B. Stadtwerke Musterstadt",
+        )
+        angebot_notiz = st.text_input(
+            "Optionale Notiz",
+            placeholder="z. B. Erstangebot oder Preisbindung bis 15.08.",
+        )
+        angebot_speichern = st.form_submit_button(
+            "Angebot dauerhaft speichern",
+            use_container_width=True,
+        )
+
+    if angebot_speichern:
+        if not anbieter.strip():
+            st.error("Bitte einen Anbieter eingeben.")
+        elif vergabepreis <= 0 or marktpreis <= 0:
+            st.error("Marktpreis und Vergabepreis müssen größer als null sein.")
+        else:
+            try:
+                offer_id = str(uuid4())
+                gespeicherte_bewertung = label
+                if angebot_notiz.strip():
+                    gespeicherte_bewertung += f" · {angebot_notiz.strip()}"
+
+                dashboard_store = append_offer(
+                    load_dashboard_store(),
+                    {
+                        "Typ": "Angebot",
+                        "ID": offer_id,
+                        "Zeitstempel": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "Anbieter": anbieter.strip(),
+                        "Lieferjahr": ref_jahr,
+                        "Marktpreis_ct_kWh": round(marktpreis, V_NK),
+                        "Vergabepreis_ct_kWh": round(float(vergabepreis), V_NK),
+                        "Aufschlag_ct_kWh": round(auf_wert, V_NK),
+                        "Aufschlag_pct": round(auf_pct, 1),
+                        "Bewertung": gespeicherte_bewertung,
+                        "Status": "aktiv",
+                    },
+                )
+                save_dashboard_store(dashboard_store)
+                st.success(f"Angebot von {anbieter.strip()} wurde gespeichert.")
+                st.rerun()
+            except Exception as exc:
+                st.error(
+                    "Das Angebot konnte nicht gespeichert werden. "
+                    "Prüfe die Schreibberechtigung des Google Sheets und die "
+                    f"Streamlit-Secrets. Technischer Hinweis: {exc}"
+                )
+
+    st.divider()
+    st.markdown("#### ⚙️ Ampel-Grenzwerte")
+
+    grenzen_anzeigen = st.checkbox(
+        "Grenzwerte anzeigen und dauerhaft anpassen",
+        value=False,
     )
 
-    g1, g2 = st.columns(2)
-    with g1:
-        st.number_input(
-            "Grün bis einschließlich (%)",
-            min_value=-100.0,
-            max_value=200.0,
-            step=0.5,
-            key="aufschlag_gruen_max",
-            help="Aufschläge bis zu diesem Wert werden als günstiger als üblich bewertet.",
-        )
-    with g2:
-        st.number_input(
-            "Gelb bis einschließlich (%)",
-            min_value=-100.0,
-            max_value=200.0,
-            step=0.5,
-            key="aufschlag_gelb_max",
-            help="Aufschläge oberhalb der grünen Grenze bis zu diesem Wert gelten als üblich. Darüber wird Rot angezeigt.",
+    if grenzen_anzeigen:
+        st.caption(
+            "Die Werte werden im Google Sheet gespeichert und gelten anschließend "
+            "auch nach einem Neustart sowie für andere Nutzer des Dashboards."
         )
 
-    gruen_anzeige = float(st.session_state.aufschlag_gruen_max)
-    gelb_anzeige = float(st.session_state.aufschlag_gelb_max)
+        with st.form("grenzwerte_form"):
+            g1, g2 = st.columns(2)
+            with g1:
+                neue_gruene_grenze = st.number_input(
+                    "Grün bis einschließlich (%)",
+                    min_value=-100.0,
+                    max_value=200.0,
+                    value=float(gruen_max),
+                    step=0.5,
+                )
+            with g2:
+                neue_gelbe_grenze = st.number_input(
+                    "Gelb bis einschließlich (%)",
+                    min_value=-100.0,
+                    max_value=200.0,
+                    value=float(gelb_max),
+                    step=0.5,
+                )
 
-    if gelb_anzeige <= gruen_anzeige:
-        st.error("Die gelbe Obergrenze muss größer als die grüne Obergrenze sein.")
-    else:
+            grenzen_speichern = st.form_submit_button(
+                "Grenzwerte dauerhaft speichern",
+                use_container_width=True,
+            )
+
         st.markdown(
             f"""
             | Aufschlag gegenüber Marktpreis | Ampel | Bewertung |
             |---:|:---:|---|
-            | **≤ {gruen_anzeige:.1f} %** | 🟢 | Günstiger als üblich |
-            | **> {gruen_anzeige:.1f} % bis {gelb_anzeige:.1f} %** | 🟡 | Im üblichen Bereich |
-            | **> {gelb_anzeige:.1f} %** | 🔴 | Auffällig hoher Aufschlag |
+            | **≤ {gruen_max:.1f} %** | 🟢 | Günstiger als üblich |
+            | **> {gruen_max:.1f} % bis {gelb_max:.1f} %** | 🟡 | Im üblichen Bereich |
+            | **> {gelb_max:.1f} %** | 🔴 | Auffällig hoher Aufschlag |
             """
         )
 
-    if st.button("Standardwerte 20 % / 28 % wiederherstellen"):
-        st.session_state.aufschlag_gruen_max = AUFSCHLAG_GRUEN_MAX_DEFAULT
-        st.session_state.aufschlag_gelb_max = AUFSCHLAG_GELB_MAX_DEFAULT
-        st.rerun()
+        if grenzen_speichern:
+            if neue_gelbe_grenze <= neue_gruene_grenze:
+                st.error(
+                    "Die gelbe Obergrenze muss größer als die grüne Obergrenze sein."
+                )
+            else:
+                try:
+                    current_store = load_dashboard_store()
+                    current_store = upsert_setting(
+                        current_store,
+                        "aufschlag_gruen_max",
+                        neue_gruene_grenze,
+                    )
+                    current_store = upsert_setting(
+                        current_store,
+                        "aufschlag_gelb_max",
+                        neue_gelbe_grenze,
+                    )
+                    save_dashboard_store(current_store)
+                    st.success("Die Ampel-Grenzwerte wurden dauerhaft gespeichert.")
+                    st.rerun()
+                except Exception as exc:
+                    st.error(
+                        "Die Grenzwerte konnten nicht gespeichert werden. "
+                        "Prüfe die Schreibberechtigung des Google Sheets und die "
+                        f"Streamlit-Secrets. Technischer Hinweis: {exc}"
+                    )
+
+    st.divider()
+    st.markdown("#### 📁 Gespeicherte Angebote")
+
+    angebote = dashboard_store[dashboard_store["Typ"] == "Angebot"].copy()
+    aktive_angebote = angebote[
+        angebote["Status"].fillna("aktiv").astype(str).str.lower() != "archiviert"
+    ].copy()
+    archivierte_angebote = angebote[
+        angebote["Status"].fillna("").astype(str).str.lower() == "archiviert"
+    ].copy()
+
+    if aktive_angebote.empty:
+        st.info("Noch keine aktiven Angebote gespeichert.")
+    else:
+        aktive_angebote = aktive_angebote.sort_values(
+            "Zeitstempel", ascending=False
+        )
+        for _, angebot in aktive_angebote.iterrows():
+            angebot_id = str(angebot["ID"])
+            anbieter_name = str(angebot.get("Anbieter") or "Unbekannter Anbieter")
+            cal = str(angebot.get("Lieferjahr") or "–")
+            preis = pd.to_numeric(
+                angebot.get("Vergabepreis_ct_kWh"), errors="coerce"
+            )
+            prozent = pd.to_numeric(
+                angebot.get("Aufschlag_pct"), errors="coerce"
+            )
+            zeit = str(angebot.get("Zeitstempel") or "–")
+            bewertung = str(angebot.get("Bewertung") or "–")
+
+            card_col, button_col = st.columns([5, 1], vertical_alignment="center")
+            with card_col:
+                preis_text = f"{preis:.2f}" if pd.notna(preis) else "–"
+                pct_text = f"{prozent:+.1f} %" if pd.notna(prozent) else "–"
+                st.markdown(
+                    f"**{anbieter_name} · Cal {cal}**  \n"
+                    f"{preis_text} ct/kWh · {pct_text} · {bewertung}  \n"
+                    f"<span style='color:#8FA9BC;font-size:.82rem'>{zeit}</span>",
+                    unsafe_allow_html=True,
+                )
+            with button_col:
+                if st.button(
+                    "Archivieren",
+                    key=f"archivieren_{angebot_id}",
+                    use_container_width=True,
+                ):
+                    try:
+                        current_store = set_offer_status(
+                            load_dashboard_store(), angebot_id, "archiviert"
+                        )
+                        save_dashboard_store(current_store)
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(f"Archivieren nicht möglich: {exc}")
+
+    with st.expander(
+        f"Archivierte Angebote ({len(archivierte_angebote)})",
+        expanded=False,
+    ):
+        if archivierte_angebote.empty:
+            st.caption("Keine archivierten Angebote vorhanden.")
+        else:
+            archivierte_angebote = archivierte_angebote.sort_values(
+                "Zeitstempel", ascending=False
+            )
+            for _, angebot in archivierte_angebote.iterrows():
+                angebot_id = str(angebot["ID"])
+                anbieter_name = str(
+                    angebot.get("Anbieter") or "Unbekannter Anbieter"
+                )
+                cal = str(angebot.get("Lieferjahr") or "–")
+                preis = pd.to_numeric(
+                    angebot.get("Vergabepreis_ct_kWh"), errors="coerce"
+                )
+                preis_text = f"{preis:.2f}" if pd.notna(preis) else "–"
+
+                info_col, restore_col = st.columns(
+                    [5, 1], vertical_alignment="center"
+                )
+                with info_col:
+                    st.markdown(
+                        f"**{anbieter_name} · Cal {cal}** · "
+                        f"{preis_text} ct/kWh"
+                    )
+                with restore_col:
+                    if st.button(
+                        "Zurückholen",
+                        key=f"zurueckholen_{angebot_id}",
+                        use_container_width=True,
+                    ):
+                        try:
+                            current_store = set_offer_status(
+                                load_dashboard_store(), angebot_id, "aktiv"
+                            )
+                            save_dashboard_store(current_store)
+                            st.rerun()
+                        except Exception as exc:
+                            st.error(f"Zurückholen nicht möglich: {exc}")
 
 
 # --------------------------------------------------------------------------
