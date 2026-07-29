@@ -134,11 +134,11 @@ def append_offer(store: pd.DataFrame, offer: dict) -> pd.DataFrame:
     return pd.concat([store, pd.DataFrame([row])], ignore_index=True)
 
 
-def set_offer_status(store: pd.DataFrame, offer_id: str, status: str) -> pd.DataFrame:
+def delete_offer(store: pd.DataFrame, offer_id: str) -> pd.DataFrame:
+    """Entfernt ein gespeichertes Angebot dauerhaft aus dem Google Sheet."""
     store = store.copy()
     mask = (store["Typ"] == "Angebot") & (store["ID"].astype(str) == str(offer_id))
-    store.loc[mask, "Status"] = status
-    return store
+    return store.loc[~mask].reset_index(drop=True)
 
 # --------------------------------------------------------------------------
 # Styling – komplettes Theme per CSS (keine config.toml noetig)
@@ -725,23 +725,18 @@ with st.expander("Vergabepreis-Vergleich", expanded=False):
     st.markdown("#### 📁 Gespeicherte Angebote")
 
     angebote = dashboard_store[dashboard_store["Typ"] == "Angebot"].copy()
-    aktive_angebote = angebote[
-        angebote["Status"].fillna("aktiv").astype(str).str.lower() != "archiviert"
-    ].copy()
-    archivierte_angebote = angebote[
-        angebote["Status"].fillna("").astype(str).str.lower() == "archiviert"
-    ].copy()
 
-    if aktive_angebote.empty:
-        st.info("Noch keine aktiven Angebote gespeichert.")
+    if angebote.empty:
+        st.info("Noch keine Angebote gespeichert.")
     else:
-        aktive_angebote = aktive_angebote.sort_values(
-            "Zeitstempel", ascending=False
-        )
-        for _, angebot in aktive_angebote.iterrows():
+        angebote = angebote.sort_values("Zeitstempel", ascending=False)
+        for _, angebot in angebote.iterrows():
             angebot_id = str(angebot["ID"])
             anbieter_name = str(angebot.get("Anbieter") or "Unbekannter Anbieter")
-            cal = str(angebot.get("Lieferjahr") or "–")
+
+            lieferjahr = pd.to_numeric(angebot.get("Lieferjahr"), errors="coerce")
+            cal = str(int(lieferjahr)) if pd.notna(lieferjahr) else "–"
+
             preis = pd.to_numeric(
                 angebot.get("Vergabepreis_ct_kWh"), errors="coerce"
             )
@@ -763,62 +758,19 @@ with st.expander("Vergabepreis-Vergleich", expanded=False):
                 )
             with button_col:
                 if st.button(
-                    "Archivieren",
-                    key=f"archivieren_{angebot_id}",
+                    "Löschen",
+                    key=f"loeschen_{angebot_id}",
                     use_container_width=True,
                 ):
                     try:
-                        current_store = set_offer_status(
-                            load_dashboard_store(), angebot_id, "archiviert"
+                        current_store = delete_offer(
+                            load_dashboard_store(), angebot_id
                         )
                         save_dashboard_store(current_store)
+                        st.success("Angebot wurde gelöscht.")
                         st.rerun()
                     except Exception as exc:
-                        st.error(f"Archivieren nicht möglich: {exc}")
-
-    with st.expander(
-        f"Archivierte Angebote ({len(archivierte_angebote)})",
-        expanded=False,
-    ):
-        if archivierte_angebote.empty:
-            st.caption("Keine archivierten Angebote vorhanden.")
-        else:
-            archivierte_angebote = archivierte_angebote.sort_values(
-                "Zeitstempel", ascending=False
-            )
-            for _, angebot in archivierte_angebote.iterrows():
-                angebot_id = str(angebot["ID"])
-                anbieter_name = str(
-                    angebot.get("Anbieter") or "Unbekannter Anbieter"
-                )
-                cal = str(angebot.get("Lieferjahr") or "–")
-                preis = pd.to_numeric(
-                    angebot.get("Vergabepreis_ct_kWh"), errors="coerce"
-                )
-                preis_text = f"{preis:.2f}" if pd.notna(preis) else "–"
-
-                info_col, restore_col = st.columns(
-                    [5, 1], vertical_alignment="center"
-                )
-                with info_col:
-                    st.markdown(
-                        f"**{anbieter_name} · Cal {cal}** · "
-                        f"{preis_text} ct/kWh"
-                    )
-                with restore_col:
-                    if st.button(
-                        "Zurückholen",
-                        key=f"zurueckholen_{angebot_id}",
-                        use_container_width=True,
-                    ):
-                        try:
-                            current_store = set_offer_status(
-                                load_dashboard_store(), angebot_id, "aktiv"
-                            )
-                            save_dashboard_store(current_store)
-                            st.rerun()
-                        except Exception as exc:
-                            st.error(f"Zurückholen nicht möglich: {exc}")
+                        st.error(f"Löschen nicht möglich: {exc}")
 
 
 # --------------------------------------------------------------------------
