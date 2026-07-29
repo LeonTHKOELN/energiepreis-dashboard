@@ -1,4 +1,3 @@
-"""
 Energiepreis-Monitoring – Streamlit-Dashboard (eigenständig, Design im Skript)
 
 Datenfluss:  Browse AI  ->  Google Sheets (ein Sheet pro Lieferjahr)  ->  Streamlit
@@ -36,6 +35,11 @@ KI_SHEET_URL = "https://docs.google.com/spreadsheets/d/1sWpKfXkTIA-0G6HlhkWiM32Z
 
 ROH_EINHEIT = "EUR/MWh"   # Einheit, wie sie in den Google Sheets steht
 AMPEL_SCHWELLE = 1.0
+
+# Standardwerte für die Bewertung des Vergabepreis-Aufschlags.
+# Die Werte können später direkt im Dashboard angepasst werden.
+AUFSCHLAG_GRUEN_MAX_DEFAULT = 20.0
+AUFSCHLAG_GELB_MAX_DEFAULT = 28.0
 
 # Anzeige-Einheiten: Label -> (Faktor gegenüber EUR/MWh, Nachkommastellen)
 EINHEITEN = {"EUR/MWh": (1.0, 2), "ct/kWh": (0.1, 2)}
@@ -411,6 +415,21 @@ if not df.empty:
 # --------------------------------------------------------------------------
 # Vergabepreis-Vergleich (immer in ct/kWh, aufklappbar)
 # --------------------------------------------------------------------------
+# Beim ersten Start werden die aus den historischen Vergaben abgeleiteten
+# Standardwerte in der Session gespeichert. Änderungen im Dashboard bleiben
+# während der aktuellen Sitzung erhalten.
+if "aufschlag_gruen_max" not in st.session_state:
+    st.session_state.aufschlag_gruen_max = AUFSCHLAG_GRUEN_MAX_DEFAULT
+if "aufschlag_gelb_max" not in st.session_state:
+    st.session_state.aufschlag_gelb_max = AUFSCHLAG_GELB_MAX_DEFAULT
+
+gruen_max = float(st.session_state.aufschlag_gruen_max)
+gelb_max = float(st.session_state.aufschlag_gelb_max)
+
+# Schutz vor einer ungültigen Reihenfolge der Grenzwerte.
+grenzen_gueltig = gelb_max > gruen_max
+effektiv_gelb_max = gelb_max if grenzen_gueltig else gruen_max + 0.1
+
 with st.expander("Vergabepreis-Vergleich", expanded=False):
     V_FAKTOR, V_NK, V_EINHEIT = 0.1, 2, "ct/kWh"   # EUR/MWh -> ct/kWh
 
@@ -428,13 +447,18 @@ with st.expander("Vergabepreis-Vergleich", expanded=False):
     if vergabepreis > 0 and marktpreis > 0:
         auf_wert = vergabepreis - marktpreis
         auf_pct = auf_wert / marktpreis * 100
-        eps = 0.5 * 10 ** (-V_NK)   # halbe Anzeigestelle Toleranz
-        if auf_wert > eps:
-            farbe, label = "#FF6B7A", "Aufschlag über Marktpreis"
-        elif auf_wert < -eps:
-            farbe, label = "#37E6A6", "Abschlag unter Marktpreis"
+
+        # Ampellogik:
+        # Grün: bis einschließlich unterer Grenze
+        # Gelb: oberhalb der unteren Grenze bis einschließlich oberer Grenze
+        # Rot: oberhalb der oberen Grenze
+        if auf_pct <= gruen_max:
+            farbe, label = "#37E6A6", "günstiger als üblich"
+        elif auf_pct <= effektiv_gelb_max:
+            farbe, label = "#FFC24B", "im üblichen Bereich"
         else:
-            farbe, label = "#FFC24B", "auf Marktpreisniveau"
+            farbe, label = "#FF6B7A", "auffällig hoher Aufschlag"
+
         st.markdown(
             f"""
             <div class="kpi-card">
@@ -448,8 +472,57 @@ with st.expander("Vergabepreis-Vergleich", expanded=False):
         )
         st.caption(
             "Marktpreis = aktueller EEX-Settlementpreis des gewählten Lieferjahres, umgerechnet in ct/kWh. "
-            "Der Aufschlag ist die Differenz deines Vergabepreises dazu (z. B. Marge, Netzentgelte, Vertrieb)."
+            "Der Aufschlag ist die Differenz des Vergabepreises zum Marktpreis und kann unter anderem "
+            "Marge, Bilanzkreis-/Profilkosten und Risikoaufschläge enthalten."
         )
+
+# Separates klappbares Feld direkt unter dem Vergabepreis-Vergleich.
+with st.expander("⚙️ Ampel-Grenzwerte für den Vergabepreis", expanded=False):
+    st.markdown(
+        "Die Bewertung basiert standardmäßig auf den bisherigen Vergaben. "
+        "Die Grenzwerte können für die aktuelle Sitzung angepasst werden."
+    )
+
+    g1, g2 = st.columns(2)
+    with g1:
+        st.number_input(
+            "Grün bis einschließlich (%)",
+            min_value=-100.0,
+            max_value=200.0,
+            step=0.5,
+            key="aufschlag_gruen_max",
+            help="Aufschläge bis zu diesem Wert werden als günstiger als üblich bewertet.",
+        )
+    with g2:
+        st.number_input(
+            "Gelb bis einschließlich (%)",
+            min_value=-100.0,
+            max_value=200.0,
+            step=0.5,
+            key="aufschlag_gelb_max",
+            help="Aufschläge oberhalb der grünen Grenze bis zu diesem Wert gelten als üblich. Darüber wird Rot angezeigt.",
+        )
+
+    gruen_anzeige = float(st.session_state.aufschlag_gruen_max)
+    gelb_anzeige = float(st.session_state.aufschlag_gelb_max)
+
+    if gelb_anzeige <= gruen_anzeige:
+        st.error("Die gelbe Obergrenze muss größer als die grüne Obergrenze sein.")
+    else:
+        st.markdown(
+            f"""
+            | Aufschlag gegenüber Marktpreis | Ampel | Bewertung |
+            |---:|:---:|---|
+            | **≤ {gruen_anzeige:.1f} %** | 🟢 | Günstiger als üblich |
+            | **> {gruen_anzeige:.1f} % bis {gelb_anzeige:.1f} %** | 🟡 | Im üblichen Bereich |
+            | **> {gelb_anzeige:.1f} %** | 🔴 | Auffällig hoher Aufschlag |
+            """
+        )
+
+    if st.button("Standardwerte 20 % / 28 % wiederherstellen"):
+        st.session_state.aufschlag_gruen_max = AUFSCHLAG_GRUEN_MAX_DEFAULT
+        st.session_state.aufschlag_gelb_max = AUFSCHLAG_GELB_MAX_DEFAULT
+        st.rerun()
 
 
 # --------------------------------------------------------------------------
