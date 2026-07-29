@@ -243,8 +243,8 @@ st.markdown(
         font-weight: 600 !important; transition: all .16s ease !important;
     }
     .stButton > button:hover, .stFormSubmitButton > button:hover {
-        background: #1597CD !important; border-color: #5FCBF2 !important;
-        color: #FFFFFF !important;
+        background: #FFFFFF !important; border-color: #5FCBF2 !important;
+        color: #0E7FB0 !important;
     }
     .stButton > button:active, .stFormSubmitButton > button:active {
         background: #08658E !important; transform: translateY(1px);
@@ -273,8 +273,21 @@ st.markdown(
     .offer-yellow { color:#FFD77A; background:rgba(255,194,75,.12); border:1px solid rgba(255,194,75,.35); }
     .offer-red { color:#FF9AAA; background:rgba(255,107,122,.12); border:1px solid rgba(255,107,122,.35); }
     [data-testid="stMetric"] {
-        background:rgba(17,35,51,.58); border:1px solid rgba(0,194,255,.16);
-        padding:12px 14px; border-radius:12px;
+        background: linear-gradient(160deg, rgba(20,52,76,.92), rgba(12,27,41,.96));
+        border: 1px solid rgba(55,196,246,.42);
+        padding: 14px 16px; border-radius: 12px;
+        box-shadow: inset 0 1px 0 rgba(255,255,255,.05);
+    }
+    [data-testid="stMetricLabel"],
+    [data-testid="stMetricLabel"] * {
+        color: #BFD7E7 !important;
+        font-weight: 600 !important;
+    }
+    [data-testid="stMetricValue"],
+    [data-testid="stMetricValue"] * {
+        color: #FFFFFF !important;
+        font-family: 'JetBrains Mono', monospace !important;
+        font-weight: 700 !important;
     }
     </style>
     """,
@@ -687,6 +700,147 @@ with st.expander("Vergabepreis-Vergleich", expanded=False):
                 )
 
     st.divider()
+    st.markdown("#### 📁 Gespeicherte Angebote")
+
+    angebote = dashboard_store[dashboard_store["Typ"] == "Angebot"].copy()
+
+    if angebote.empty:
+        st.info("Noch keine Angebote gespeichert.")
+    else:
+        # Zahlen normalisieren und Bewertung stets mit den aktuell gespeicherten
+        # Ampel-Grenzwerten neu berechnen. Historische Bewertungstexte werden
+        # damit bewusst nicht als maßgeblich verwendet.
+        for spalte in [
+            "Lieferjahr", "Marktpreis_ct_kWh", "Vergabepreis_ct_kWh",
+            "Aufschlag_ct_kWh", "Aufschlag_pct"
+        ]:
+            angebote[spalte] = pd.to_numeric(angebote[spalte], errors="coerce")
+
+        def aktuelle_bewertung(pct):
+            if pd.isna(pct):
+                return "Keine Bewertung", "offer-yellow", "🟡"
+            if pct <= gruen_max:
+                return "Günstiger als üblich", "offer-green", "🟢"
+            if pct <= gelb_max:
+                return "Im üblichen Bereich", "offer-yellow", "🟡"
+            return "Auffällig hoher Aufschlag", "offer-red", "🔴"
+
+        # Alte Datensätze hatten die Notiz teilweise im Feld Bewertung.
+        def angebot_notiz_lesen(row):
+            notiz = row.get("Notiz")
+            if pd.notna(notiz) and str(notiz).strip():
+                return str(notiz).strip()
+            alt = str(row.get("Bewertung") or "")
+            teile = [x.strip() for x in alt.split(" · ", 1)]
+            return teile[1] if len(teile) == 2 else ""
+
+        angebote["Notiz_Anzeige"] = angebote.apply(angebot_notiz_lesen, axis=1)
+        angebote = angebote.sort_values("Zeitstempel", ascending=False)
+
+        # Filter stehen bewusst vor den Kennzahlen. Dadurch beziehen sich
+        # Tabelle und KPI-Karten immer auf dieselbe aktuelle Auswahl.
+        f1, f2 = st.columns(2)
+        anbieter_optionen = sorted(angebote["Anbieter"].dropna().astype(str).unique().tolist())
+        jahre_optionen = sorted(
+            {str(int(j)) for j in angebote["Lieferjahr"].dropna().tolist()}
+        )
+        with f1:
+            filter_anbieter = st.multiselect(
+                "Anbieter filtern", anbieter_optionen, placeholder="Alle Anbieter"
+            )
+        with f2:
+            filter_jahre = st.multiselect(
+                "Lieferjahr filtern", jahre_optionen, placeholder="Alle Lieferjahre"
+            )
+
+        angezeigt = angebote.copy()
+        if filter_anbieter:
+            angezeigt = angezeigt[angezeigt["Anbieter"].astype(str).isin(filter_anbieter)]
+        if filter_jahre:
+            angezeigt = angezeigt[
+                angezeigt["Lieferjahr"].apply(
+                    lambda x: str(int(x)) if pd.notna(x) else "–"
+                ).isin(filter_jahre)
+            ]
+
+        # Kompakte, gut lesbare Kennzahlen auf Basis der gefilterten Angebote.
+        k1, k2, k3, k4 = st.columns(4)
+        gueltige_pct = angezeigt["Aufschlag_pct"].dropna()
+        k1.metric("Angebote", f"{len(angezeigt)}")
+        k2.metric(
+            "Ø Aufschlag",
+            f"{gueltige_pct.mean():.1f} %" if not gueltige_pct.empty else "–",
+        )
+        k3.metric(
+            "Minimum",
+            f"{gueltige_pct.min():.1f} %" if not gueltige_pct.empty else "–",
+        )
+        k4.metric(
+            "Maximum",
+            f"{gueltige_pct.max():.1f} %" if not gueltige_pct.empty else "–",
+        )
+
+        if angezeigt.empty:
+            st.info("Für die gewählten Filter wurden keine Angebote gefunden.")
+        else:
+            # Tabellenkopf
+            kopf = st.columns([2.2, .75, 1.0, .85, 1.55, 1.55, 1.25, .75])
+            for col, text in zip(
+                kopf,
+                ["Anbieter", "Jahr", "Angebot", "Aufschlag", "Bewertung", "Notiz", "Gespeichert", "Aktion"],
+            ):
+                col.markdown(f"<div class='offer-head'>{text}</div>", unsafe_allow_html=True)
+
+            for _, angebot in angezeigt.iterrows():
+                angebot_id = str(angebot["ID"])
+                anbieter_name = str(angebot.get("Anbieter") or "Unbekannter Anbieter")
+                cal = str(int(angebot["Lieferjahr"])) if pd.notna(angebot["Lieferjahr"]) else "–"
+                preis = angebot["Vergabepreis_ct_kWh"]
+                prozent = angebot["Aufschlag_pct"]
+                notiz = angebot["Notiz_Anzeige"] or "–"
+                label_aktuell, badge_class, symbol = aktuelle_bewertung(prozent)
+
+                zeit_raw = pd.to_datetime(angebot.get("Zeitstempel"), errors="coerce")
+                zeit = zeit_raw.strftime("%d.%m.%Y · %H:%M") if pd.notna(zeit_raw) else "–"
+                preis_text = f"{preis:.2f} ct/kWh" if pd.notna(preis) else "–"
+                pct_text = f"{prozent:+.1f} %" if pd.notna(prozent) else "–"
+
+                with st.container(border=True):
+                    cols = st.columns([2.2, .75, 1.0, .85, 1.55, 1.55, 1.25, .75], vertical_alignment="center")
+                    cols[0].markdown(f"<div class='offer-cell offer-main'>{anbieter_name}</div>", unsafe_allow_html=True)
+                    cols[1].markdown(f"<div class='offer-cell'>Cal {cal}</div>", unsafe_allow_html=True)
+                    cols[2].markdown(f"<div class='offer-cell offer-main'>{preis_text}</div>", unsafe_allow_html=True)
+                    cols[3].markdown(f"<div class='offer-cell offer-main'>{pct_text}</div>", unsafe_allow_html=True)
+                    cols[4].markdown(
+                        f"<span class='offer-badge {badge_class}'>{symbol} {label_aktuell}</span>",
+                        unsafe_allow_html=True,
+                    )
+                    cols[5].markdown(f"<div class='offer-cell'>{notiz}</div>", unsafe_allow_html=True)
+                    cols[6].markdown(f"<div class='offer-muted'>{zeit}</div>", unsafe_allow_html=True)
+                    with cols[7]:
+                        if st.button(
+                            "🗑️",
+                            key=f"loeschen_{angebot_id}",
+                            help=f"Angebot von {anbieter_name} dauerhaft löschen",
+                            type="primary",
+                            use_container_width=True,
+                        ):
+                            try:
+                                current_store = delete_offer(
+                                    load_dashboard_store(), angebot_id
+                                )
+                                save_dashboard_store(current_store)
+                                st.success("Angebot wurde gelöscht.")
+                                st.rerun()
+                            except Exception as exc:
+                                st.error(f"Löschen nicht möglich: {exc}")
+
+        st.caption(
+            f"Bewertung nach den aktuell gespeicherten Grenzwerten: "
+            f"Grün bis {gruen_max:.1f} %, Gelb bis {gelb_max:.1f} %, darüber Rot."
+        )
+
+    st.divider()
     st.markdown("#### ⚙️ Ampel-Grenzwerte")
 
     grenzen_anzeigen = st.checkbox(
@@ -762,136 +916,6 @@ with st.expander("Vergabepreis-Vergleich", expanded=False):
                         f"Streamlit-Secrets. Technischer Hinweis: {exc}"
                     )
 
-    st.divider()
-    st.markdown("#### 📁 Gespeicherte Angebote")
-
-    angebote = dashboard_store[dashboard_store["Typ"] == "Angebot"].copy()
-
-    if angebote.empty:
-        st.info("Noch keine Angebote gespeichert.")
-    else:
-        # Zahlen normalisieren und Bewertung stets mit den aktuell gespeicherten
-        # Ampel-Grenzwerten neu berechnen. Historische Bewertungstexte werden
-        # damit bewusst nicht als maßgeblich verwendet.
-        for spalte in [
-            "Lieferjahr", "Marktpreis_ct_kWh", "Vergabepreis_ct_kWh",
-            "Aufschlag_ct_kWh", "Aufschlag_pct"
-        ]:
-            angebote[spalte] = pd.to_numeric(angebote[spalte], errors="coerce")
-
-        def aktuelle_bewertung(pct):
-            if pd.isna(pct):
-                return "Keine Bewertung", "offer-yellow", "🟡"
-            if pct <= gruen_max:
-                return "Günstiger als üblich", "offer-green", "🟢"
-            if pct <= gelb_max:
-                return "Im üblichen Bereich", "offer-yellow", "🟡"
-            return "Auffällig hoher Aufschlag", "offer-red", "🔴"
-
-        # Alte Datensätze hatten die Notiz teilweise im Feld Bewertung.
-        def angebot_notiz_lesen(row):
-            notiz = row.get("Notiz")
-            if pd.notna(notiz) and str(notiz).strip():
-                return str(notiz).strip()
-            alt = str(row.get("Bewertung") or "")
-            teile = [x.strip() for x in alt.split(" · ", 1)]
-            return teile[1] if len(teile) == 2 else ""
-
-        angebote["Notiz_Anzeige"] = angebote.apply(angebot_notiz_lesen, axis=1)
-        angebote = angebote.sort_values("Zeitstempel", ascending=False)
-
-        # Kompakte Kennzahlen
-        k1, k2, k3, k4 = st.columns(4)
-        gueltige_pct = angebote["Aufschlag_pct"].dropna()
-        k1.metric("Angebote", f"{len(angebote)}")
-        k2.metric("Ø Aufschlag", f"{gueltige_pct.mean():.1f} %" if not gueltige_pct.empty else "–")
-        k3.metric("Minimum", f"{gueltige_pct.min():.1f} %" if not gueltige_pct.empty else "–")
-        k4.metric("Maximum", f"{gueltige_pct.max():.1f} %" if not gueltige_pct.empty else "–")
-
-        # Filter
-        f1, f2 = st.columns(2)
-        anbieter_optionen = sorted(angebote["Anbieter"].dropna().astype(str).unique().tolist())
-        jahre_optionen = sorted(
-            {str(int(j)) for j in angebote["Lieferjahr"].dropna().tolist()}
-        )
-        with f1:
-            filter_anbieter = st.multiselect(
-                "Anbieter filtern", anbieter_optionen, placeholder="Alle Anbieter"
-            )
-        with f2:
-            filter_jahre = st.multiselect(
-                "Lieferjahr filtern", jahre_optionen, placeholder="Alle Lieferjahre"
-            )
-
-        angezeigt = angebote.copy()
-        if filter_anbieter:
-            angezeigt = angezeigt[angezeigt["Anbieter"].astype(str).isin(filter_anbieter)]
-        if filter_jahre:
-            angezeigt = angezeigt[
-                angezeigt["Lieferjahr"].apply(
-                    lambda x: str(int(x)) if pd.notna(x) else "–"
-                ).isin(filter_jahre)
-            ]
-
-        if angezeigt.empty:
-            st.info("Für die gewählten Filter wurden keine Angebote gefunden.")
-        else:
-            # Tabellenkopf
-            kopf = st.columns([2.2, .75, 1.0, .85, 1.55, 1.55, 1.25, .75])
-            for col, text in zip(
-                kopf,
-                ["Anbieter", "Jahr", "Angebot", "Aufschlag", "Bewertung", "Notiz", "Gespeichert", "Aktion"],
-            ):
-                col.markdown(f"<div class='offer-head'>{text}</div>", unsafe_allow_html=True)
-
-            for _, angebot in angezeigt.iterrows():
-                angebot_id = str(angebot["ID"])
-                anbieter_name = str(angebot.get("Anbieter") or "Unbekannter Anbieter")
-                cal = str(int(angebot["Lieferjahr"])) if pd.notna(angebot["Lieferjahr"]) else "–"
-                preis = angebot["Vergabepreis_ct_kWh"]
-                prozent = angebot["Aufschlag_pct"]
-                notiz = angebot["Notiz_Anzeige"] or "–"
-                label_aktuell, badge_class, symbol = aktuelle_bewertung(prozent)
-
-                zeit_raw = pd.to_datetime(angebot.get("Zeitstempel"), errors="coerce")
-                zeit = zeit_raw.strftime("%d.%m.%Y · %H:%M") if pd.notna(zeit_raw) else "–"
-                preis_text = f"{preis:.2f} ct/kWh" if pd.notna(preis) else "–"
-                pct_text = f"{prozent:+.1f} %" if pd.notna(prozent) else "–"
-
-                with st.container(border=True):
-                    cols = st.columns([2.2, .75, 1.0, .85, 1.55, 1.55, 1.25, .75], vertical_alignment="center")
-                    cols[0].markdown(f"<div class='offer-cell offer-main'>{anbieter_name}</div>", unsafe_allow_html=True)
-                    cols[1].markdown(f"<div class='offer-cell'>Cal {cal}</div>", unsafe_allow_html=True)
-                    cols[2].markdown(f"<div class='offer-cell offer-main'>{preis_text}</div>", unsafe_allow_html=True)
-                    cols[3].markdown(f"<div class='offer-cell offer-main'>{pct_text}</div>", unsafe_allow_html=True)
-                    cols[4].markdown(
-                        f"<span class='offer-badge {badge_class}'>{symbol} {label_aktuell}</span>",
-                        unsafe_allow_html=True,
-                    )
-                    cols[5].markdown(f"<div class='offer-cell'>{notiz}</div>", unsafe_allow_html=True)
-                    cols[6].markdown(f"<div class='offer-muted'>{zeit}</div>", unsafe_allow_html=True)
-                    with cols[7]:
-                        if st.button(
-                            "🗑️",
-                            key=f"loeschen_{angebot_id}",
-                            help=f"Angebot von {anbieter_name} dauerhaft löschen",
-                            type="primary",
-                            use_container_width=True,
-                        ):
-                            try:
-                                current_store = delete_offer(
-                                    load_dashboard_store(), angebot_id
-                                )
-                                save_dashboard_store(current_store)
-                                st.success("Angebot wurde gelöscht.")
-                                st.rerun()
-                            except Exception as exc:
-                                st.error(f"Löschen nicht möglich: {exc}")
-
-        st.caption(
-            f"Bewertung nach den aktuell gespeicherten Grenzwerten: "
-            f"Grün bis {gruen_max:.1f} %, Gelb bis {gelb_max:.1f} %, darüber Rot."
-        )
 
 
 # --------------------------------------------------------------------------
