@@ -69,6 +69,7 @@ STORE_COLUMNS = [
     "Aufschlag_pct",
     "Bewertung",
     "Status",
+    "Notiz",
 ]
 
 
@@ -234,6 +235,47 @@ st.markdown(
     table.tbl td { padding: 9px 14px; border-bottom: 1px solid rgba(255,255,255,.05); color: #D4E3EE; }
     table.tbl td.num, table.tbl th.num { text-align: right; font-family: 'JetBrains Mono', monospace; }
     table.tbl tbody tr:hover td { background: rgba(0,194,255,.06); }
+
+    /* Einheitliche Buttons: blau im Normalzustand, dunkler beim Klicken */
+    .stButton > button, .stFormSubmitButton > button {
+        background: #0E7FB0 !important; color: #FFFFFF !important;
+        border: 1px solid #20A9DF !important; border-radius: 9px !important;
+        font-weight: 600 !important; transition: all .16s ease !important;
+    }
+    .stButton > button:hover, .stFormSubmitButton > button:hover {
+        background: #1597CD !important; border-color: #5FCBF2 !important;
+        color: #FFFFFF !important;
+    }
+    .stButton > button:active, .stFormSubmitButton > button:active {
+        background: #08658E !important; transform: translateY(1px);
+    }
+    /* Primary wird ausschließlich für Löschen verwendet */
+    .stButton > button[kind="primary"] {
+        background: #B83A4A !important; border-color: #E05A6A !important;
+    }
+    .stButton > button[kind="primary"]:hover {
+        background: #D44B5D !important; border-color: #FF7A8A !important;
+    }
+
+    /* Angebotsübersicht */
+    .offer-head {
+        color:#86A9BF; font-size:.72rem; font-weight:700; text-transform:uppercase;
+        letter-spacing:.08em; padding:.25rem .25rem .35rem;
+    }
+    .offer-cell { color:#D9E7F0; font-size:.9rem; padding:.2rem .15rem; }
+    .offer-main { color:#EEF6FC; font-weight:700; }
+    .offer-muted { color:#8FA9BC; font-size:.78rem; }
+    .offer-badge {
+        display:inline-block; border-radius:999px; padding:.28rem .62rem;
+        font-size:.78rem; font-weight:700; white-space:nowrap;
+    }
+    .offer-green { color:#8CFFD2; background:rgba(55,230,166,.12); border:1px solid rgba(55,230,166,.35); }
+    .offer-yellow { color:#FFD77A; background:rgba(255,194,75,.12); border:1px solid rgba(255,194,75,.35); }
+    .offer-red { color:#FF9AAA; background:rgba(255,107,122,.12); border:1px solid rgba(255,107,122,.35); }
+    [data-testid="stMetric"] {
+        background:rgba(17,35,51,.58); border:1px solid rgba(0,194,255,.16);
+        padding:12px 14px; border-radius:12px;
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -616,8 +658,6 @@ with st.expander("Vergabepreis-Vergleich", expanded=False):
             try:
                 offer_id = str(uuid4())
                 gespeicherte_bewertung = label
-                if angebot_notiz.strip():
-                    gespeicherte_bewertung += f" · {angebot_notiz.strip()}"
 
                 dashboard_store = append_offer(
                     load_dashboard_store(),
@@ -632,6 +672,7 @@ with st.expander("Vergabepreis-Vergleich", expanded=False):
                         "Aufschlag_ct_kWh": round(auf_wert, V_NK),
                         "Aufschlag_pct": round(auf_pct, 1),
                         "Bewertung": gespeicherte_bewertung,
+                        "Notiz": angebot_notiz.strip(),
                         "Status": "aktiv",
                     },
                 )
@@ -729,48 +770,128 @@ with st.expander("Vergabepreis-Vergleich", expanded=False):
     if angebote.empty:
         st.info("Noch keine Angebote gespeichert.")
     else:
+        # Zahlen normalisieren und Bewertung stets mit den aktuell gespeicherten
+        # Ampel-Grenzwerten neu berechnen. Historische Bewertungstexte werden
+        # damit bewusst nicht als maßgeblich verwendet.
+        for spalte in [
+            "Lieferjahr", "Marktpreis_ct_kWh", "Vergabepreis_ct_kWh",
+            "Aufschlag_ct_kWh", "Aufschlag_pct"
+        ]:
+            angebote[spalte] = pd.to_numeric(angebote[spalte], errors="coerce")
+
+        def aktuelle_bewertung(pct):
+            if pd.isna(pct):
+                return "Keine Bewertung", "offer-yellow", "🟡"
+            if pct <= gruen_max:
+                return "Günstiger als üblich", "offer-green", "🟢"
+            if pct <= gelb_max:
+                return "Im üblichen Bereich", "offer-yellow", "🟡"
+            return "Auffällig hoher Aufschlag", "offer-red", "🔴"
+
+        # Alte Datensätze hatten die Notiz teilweise im Feld Bewertung.
+        def angebot_notiz_lesen(row):
+            notiz = row.get("Notiz")
+            if pd.notna(notiz) and str(notiz).strip():
+                return str(notiz).strip()
+            alt = str(row.get("Bewertung") or "")
+            teile = [x.strip() for x in alt.split(" · ", 1)]
+            return teile[1] if len(teile) == 2 else ""
+
+        angebote["Notiz_Anzeige"] = angebote.apply(angebot_notiz_lesen, axis=1)
         angebote = angebote.sort_values("Zeitstempel", ascending=False)
-        for _, angebot in angebote.iterrows():
-            angebot_id = str(angebot["ID"])
-            anbieter_name = str(angebot.get("Anbieter") or "Unbekannter Anbieter")
 
-            lieferjahr = pd.to_numeric(angebot.get("Lieferjahr"), errors="coerce")
-            cal = str(int(lieferjahr)) if pd.notna(lieferjahr) else "–"
+        # Kompakte Kennzahlen
+        k1, k2, k3, k4 = st.columns(4)
+        gueltige_pct = angebote["Aufschlag_pct"].dropna()
+        k1.metric("Angebote", f"{len(angebote)}")
+        k2.metric("Ø Aufschlag", f"{gueltige_pct.mean():.1f} %" if not gueltige_pct.empty else "–")
+        k3.metric("Minimum", f"{gueltige_pct.min():.1f} %" if not gueltige_pct.empty else "–")
+        k4.metric("Maximum", f"{gueltige_pct.max():.1f} %" if not gueltige_pct.empty else "–")
 
-            preis = pd.to_numeric(
-                angebot.get("Vergabepreis_ct_kWh"), errors="coerce"
+        # Filter
+        f1, f2 = st.columns(2)
+        anbieter_optionen = sorted(angebote["Anbieter"].dropna().astype(str).unique().tolist())
+        jahre_optionen = sorted(
+            {str(int(j)) for j in angebote["Lieferjahr"].dropna().tolist()}
+        )
+        with f1:
+            filter_anbieter = st.multiselect(
+                "Anbieter filtern", anbieter_optionen, placeholder="Alle Anbieter"
             )
-            prozent = pd.to_numeric(
-                angebot.get("Aufschlag_pct"), errors="coerce"
+        with f2:
+            filter_jahre = st.multiselect(
+                "Lieferjahr filtern", jahre_optionen, placeholder="Alle Lieferjahre"
             )
-            zeit = str(angebot.get("Zeitstempel") or "–")
-            bewertung = str(angebot.get("Bewertung") or "–")
 
-            card_col, button_col = st.columns([5, 1], vertical_alignment="center")
-            with card_col:
-                preis_text = f"{preis:.2f}" if pd.notna(preis) else "–"
+        angezeigt = angebote.copy()
+        if filter_anbieter:
+            angezeigt = angezeigt[angezeigt["Anbieter"].astype(str).isin(filter_anbieter)]
+        if filter_jahre:
+            angezeigt = angezeigt[
+                angezeigt["Lieferjahr"].apply(
+                    lambda x: str(int(x)) if pd.notna(x) else "–"
+                ).isin(filter_jahre)
+            ]
+
+        if angezeigt.empty:
+            st.info("Für die gewählten Filter wurden keine Angebote gefunden.")
+        else:
+            # Tabellenkopf
+            kopf = st.columns([2.2, .75, 1.0, .85, 1.55, 1.55, 1.25, .75])
+            for col, text in zip(
+                kopf,
+                ["Anbieter", "Jahr", "Angebot", "Aufschlag", "Bewertung", "Notiz", "Gespeichert", "Aktion"],
+            ):
+                col.markdown(f"<div class='offer-head'>{text}</div>", unsafe_allow_html=True)
+
+            for _, angebot in angezeigt.iterrows():
+                angebot_id = str(angebot["ID"])
+                anbieter_name = str(angebot.get("Anbieter") or "Unbekannter Anbieter")
+                cal = str(int(angebot["Lieferjahr"])) if pd.notna(angebot["Lieferjahr"]) else "–"
+                preis = angebot["Vergabepreis_ct_kWh"]
+                prozent = angebot["Aufschlag_pct"]
+                notiz = angebot["Notiz_Anzeige"] or "–"
+                label_aktuell, badge_class, symbol = aktuelle_bewertung(prozent)
+
+                zeit_raw = pd.to_datetime(angebot.get("Zeitstempel"), errors="coerce")
+                zeit = zeit_raw.strftime("%d.%m.%Y · %H:%M") if pd.notna(zeit_raw) else "–"
+                preis_text = f"{preis:.2f} ct/kWh" if pd.notna(preis) else "–"
                 pct_text = f"{prozent:+.1f} %" if pd.notna(prozent) else "–"
-                st.markdown(
-                    f"**{anbieter_name} · Cal {cal}**  \n"
-                    f"{preis_text} ct/kWh · {pct_text} · {bewertung}  \n"
-                    f"<span style='color:#8FA9BC;font-size:.82rem'>{zeit}</span>",
-                    unsafe_allow_html=True,
-                )
-            with button_col:
-                if st.button(
-                    "Löschen",
-                    key=f"loeschen_{angebot_id}",
-                    use_container_width=True,
-                ):
-                    try:
-                        current_store = delete_offer(
-                            load_dashboard_store(), angebot_id
-                        )
-                        save_dashboard_store(current_store)
-                        st.success("Angebot wurde gelöscht.")
-                        st.rerun()
-                    except Exception as exc:
-                        st.error(f"Löschen nicht möglich: {exc}")
+
+                with st.container(border=True):
+                    cols = st.columns([2.2, .75, 1.0, .85, 1.55, 1.55, 1.25, .75], vertical_alignment="center")
+                    cols[0].markdown(f"<div class='offer-cell offer-main'>{anbieter_name}</div>", unsafe_allow_html=True)
+                    cols[1].markdown(f"<div class='offer-cell'>Cal {cal}</div>", unsafe_allow_html=True)
+                    cols[2].markdown(f"<div class='offer-cell offer-main'>{preis_text}</div>", unsafe_allow_html=True)
+                    cols[3].markdown(f"<div class='offer-cell offer-main'>{pct_text}</div>", unsafe_allow_html=True)
+                    cols[4].markdown(
+                        f"<span class='offer-badge {badge_class}'>{symbol} {label_aktuell}</span>",
+                        unsafe_allow_html=True,
+                    )
+                    cols[5].markdown(f"<div class='offer-cell'>{notiz}</div>", unsafe_allow_html=True)
+                    cols[6].markdown(f"<div class='offer-muted'>{zeit}</div>", unsafe_allow_html=True)
+                    with cols[7]:
+                        if st.button(
+                            "🗑️",
+                            key=f"loeschen_{angebot_id}",
+                            help=f"Angebot von {anbieter_name} dauerhaft löschen",
+                            type="primary",
+                            use_container_width=True,
+                        ):
+                            try:
+                                current_store = delete_offer(
+                                    load_dashboard_store(), angebot_id
+                                )
+                                save_dashboard_store(current_store)
+                                st.success("Angebot wurde gelöscht.")
+                                st.rerun()
+                            except Exception as exc:
+                                st.error(f"Löschen nicht möglich: {exc}")
+
+        st.caption(
+            f"Bewertung nach den aktuell gespeicherten Grenzwerten: "
+            f"Grün bis {gruen_max:.1f} %, Gelb bis {gelb_max:.1f} %, darüber Rot."
+        )
 
 
 # --------------------------------------------------------------------------
