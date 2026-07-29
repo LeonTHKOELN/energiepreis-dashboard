@@ -135,6 +135,33 @@ def append_offer(store: pd.DataFrame, offer: dict) -> pd.DataFrame:
     return pd.concat([store, pd.DataFrame([row])], ignore_index=True)
 
 
+def upsert_supplier(store: pd.DataFrame, supplier_name: str) -> pd.DataFrame:
+    """Speichert einen Anbieter dauerhaft für die spätere Dropdown-Auswahl."""
+    supplier_name = str(supplier_name).strip()
+    if not supplier_name:
+        return store
+
+    store = store.copy()
+    existing = store[
+        (store["Typ"] == "Anbieter")
+        & (store["Anbieter"].astype(str).str.strip().str.casefold() == supplier_name.casefold())
+    ]
+    if not existing.empty:
+        return store
+
+    row = {column: None for column in STORE_COLUMNS}
+    row.update(
+        {
+            "Typ": "Anbieter",
+            "ID": str(uuid4()),
+            "Zeitstempel": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "Anbieter": supplier_name,
+            "Status": "aktiv",
+        }
+    )
+    return pd.concat([store, pd.DataFrame([row])], ignore_index=True)
+
+
 def delete_offer(store: pd.DataFrame, offer_id: str) -> pd.DataFrame:
     """Entfernt ein gespeichertes Angebot dauerhaft aus dem Google Sheet."""
     store = store.copy()
@@ -648,11 +675,35 @@ with st.expander("Vergabepreis-Vergleich", expanded=False):
     st.divider()
     st.markdown("#### 💾 Angebot speichern")
 
+    # Anbieter werden dauerhaft im gemeinsamen Dashboard-Sheet geführt.
+    # Zusätzlich werden Anbieter aus bereits gespeicherten Angeboten übernommen,
+    # damit auch ältere Datensätze sofort im Dropdown verfügbar sind.
+    anbieter_stamm = dashboard_store[dashboard_store["Typ"] == "Anbieter"]["Anbieter"]
+    anbieter_aus_angeboten = dashboard_store[dashboard_store["Typ"] == "Angebot"]["Anbieter"]
+    anbieter_optionen_speichern = sorted(
+        {
+            str(name).strip()
+            for name in pd.concat([anbieter_stamm, anbieter_aus_angeboten], ignore_index=True).dropna()
+            if str(name).strip()
+        },
+        key=str.casefold,
+    )
+    neue_anbieter_option = "➕ Neuen Anbieter hinzufügen"
+
     with st.form("angebot_speichern_form", clear_on_submit=True):
-        anbieter = st.text_input(
-            "Anbieter",
-            placeholder="z. B. Stadtwerke Musterstadt",
+        anbieter_auswahl = st.selectbox(
+            "Anbieter auswählen",
+            options=[neue_anbieter_option] + anbieter_optionen_speichern,
+            index=0,
         )
+
+        neuer_anbieter = ""
+        if anbieter_auswahl == neue_anbieter_option:
+            neuer_anbieter = st.text_input(
+                "Neuen Anbieter eingeben",
+                placeholder="z. B. Stadtwerke Musterstadt",
+            )
+
         angebot_notiz = st.text_input(
             "Optionale Notiz",
             placeholder="z. B. Erstangebot oder Preisbindung bis 15.08.",
@@ -662,9 +713,15 @@ with st.expander("Vergabepreis-Vergleich", expanded=False):
             use_container_width=True,
         )
 
+    anbieter = (
+        neuer_anbieter.strip()
+        if anbieter_auswahl == neue_anbieter_option
+        else str(anbieter_auswahl).strip()
+    )
+
     if angebot_speichern:
-        if not anbieter.strip():
-            st.error("Bitte einen Anbieter eingeben.")
+        if not anbieter:
+            st.error("Bitte einen vorhandenen Anbieter auswählen oder einen neuen Anbieter eingeben.")
         elif vergabepreis <= 0 or marktpreis <= 0:
             st.error("Marktpreis und Vergabepreis müssen größer als null sein.")
         else:
@@ -672,13 +729,15 @@ with st.expander("Vergabepreis-Vergleich", expanded=False):
                 offer_id = str(uuid4())
                 gespeicherte_bewertung = label
 
+                current_store = load_dashboard_store()
+                current_store = upsert_supplier(current_store, anbieter)
                 dashboard_store = append_offer(
-                    load_dashboard_store(),
+                    current_store,
                     {
                         "Typ": "Angebot",
                         "ID": offer_id,
                         "Zeitstempel": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        "Anbieter": anbieter.strip(),
+                        "Anbieter": anbieter,
                         "Lieferjahr": ref_jahr,
                         "Marktpreis_ct_kWh": round(marktpreis, V_NK),
                         "Vergabepreis_ct_kWh": round(float(vergabepreis), V_NK),
@@ -690,7 +749,7 @@ with st.expander("Vergabepreis-Vergleich", expanded=False):
                     },
                 )
                 save_dashboard_store(dashboard_store)
-                st.success(f"Angebot von {anbieter.strip()} wurde gespeichert.")
+                st.success(f"Angebot von {anbieter} wurde gespeichert.")
                 st.rerun()
             except Exception as exc:
                 st.error(
