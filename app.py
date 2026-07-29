@@ -1,3 +1,4 @@
+"""
 Energiepreis-Monitoring – Streamlit-Dashboard (eigenständig, Design im Skript)
 
 Datenfluss:  Browse AI  ->  Google Sheets (ein Sheet pro Lieferjahr)  ->  Streamlit
